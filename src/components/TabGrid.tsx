@@ -3,6 +3,7 @@ import type { Playhead, RangeSelection, SectionRange, Track } from "../types";
 import { midiToNoteName } from "../lib/tunings";
 import { COLS_PER_MEASURE, chunkMeasures, stringMidi } from "../lib/instruments";
 import { globalCol, normalizeRect } from "../lib/clipboard";
+import { displayCellValue } from "../lib/harmonics";
 import { tieColor } from "../lib/sectionColors";
 import { CloseIcon } from "./Icons";
 
@@ -13,6 +14,8 @@ interface Props {
 	measureCount: number;
 	measureNotes: string[];
 	canDeleteSection: boolean;
+	/** milliseconds per grid column at the current tempo — paces the playhead glide */
+	stepDurationMs: number;
 	selected: RangeSelection | null;
 	playhead: Playhead | null;
 	gridRef: RefObject<HTMLDivElement | null>;
@@ -42,6 +45,7 @@ export default function TabGrid({
 	measureCount,
 	measureNotes,
 	canDeleteSection,
+	stepDurationMs,
 	selected,
 	playhead,
 	gridRef,
@@ -285,8 +289,12 @@ export default function TabGrid({
 								<div className="relative">
 									{playheadLeft(lineMeasures) !== null && (
 										<div
-											className="absolute top-0 bottom-0 border-l-2 border-accent bg-accent/10 transition-[left] duration-150 ease-out pointer-events-none z-10"
-											style={{ left: playheadLeft(lineMeasures) as number, width: CELL_W }}
+											className="absolute top-0 bottom-0 border-l-2 border-accent bg-accent/10 pointer-events-none z-10"
+											style={{
+												left: playheadLeft(lineMeasures) as number,
+												width: CELL_W,
+												transition: `left ${stepDurationMs}ms linear`,
+											}}
 										/>
 									)}
 									{track.tuning.map((str, s) => (
@@ -299,7 +307,7 @@ export default function TabGrid({
 												<span className="flex items-center shrink-0" key={m}>
 													{track.measures[m].map((col, c) => {
 														const value = col[s];
-														const label = value === null || value === "" ? "-" : value;
+														const label = value === null || value === "" ? "-" : displayCellValue(value);
 														return (
 															<button
 																key={c}

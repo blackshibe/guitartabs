@@ -1,17 +1,6 @@
 import { useState } from "react";
 import { HelpIcon } from "./Icons";
-
-const SHORTCUTS: [string, string][] = [
-	["0-9", "set fret"],
-	["↑ ↓", "move string"],
-	["← → Tab", "move column"],
-	["Shift+arrows / drag", "select range"],
-	["Ctrl+C / X / V", "copy / cut / paste"],
-	["Ctrl+Z / Y", "undo / redo"],
-	["Delete", "clear"],
-	["Space", "play / stop"],
-	["Esc", "deselect"],
-];
+import { SHORTCUTS } from "../lib/shortcuts";
 
 export default function ShortcutHelp() {
 	const [open, setOpen] = useState(false);

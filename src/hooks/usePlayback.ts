@@ -3,6 +3,7 @@ import type { Playhead, Song } from "../types";
 import { COLS_PER_MEASURE, stringMidi } from "../lib/instruments";
 import { midiToFreq } from "../lib/tunings";
 import { now, playNote, resumeAudio, startStem, stopStems } from "../lib/audio";
+import { cellMidiOffset, parseCellValue } from "../lib/harmonics";
 import { videoSecondsForCol } from "../lib/youtube";
 import type { YoutubeSyncHandle } from "../components/YoutubeSync";
 
@@ -39,6 +40,13 @@ export function usePlayback(song: Song, youtubePlayerRef: RefObject<YoutubeSyncH
 	}, [youtubePlayerRef]);
 
 	const startPlayback = (fromStep = 0) => {
+		// Restarting mid-play (scrub, click-to-jump) must kill the previous
+		// scheduler first, or two tick loops would schedule on top of each other.
+		if (schedulerTimeoutRef.current) clearTimeout(schedulerTimeoutRef.current);
+		schedulerTimeoutRef.current = null;
+		visualTimeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
+		visualTimeoutsRef.current = [];
+		stopStems();
 		resumeAudio();
 		setIsPlaying(true);
 		const stepDuration = 60 / bpm / 2; // seconds per 8th note
@@ -75,10 +83,11 @@ export function usePlayback(song: Song, youtubePlayerRef: RefObject<YoutubeSyncH
 				const cells = track.measures[measure]?.[column];
 				if (!cells) return;
 				const liveTrack = tracksRef.current.find((candidate) => candidate.id === track.id) ?? track;
-				cells.forEach((fret, stringIndex) => {
-					if (fret === null || fret === "") return;
+				cells.forEach((value, stringIndex) => {
+					const parsed = parseCellValue(value);
+					if (!parsed) return;
 					if (liveTrack.backing) return; // the backing audio is this track's sound
-					const midi = stringMidi(track.tuning[stringIndex]) + Number(fret);
+					const midi = stringMidi(track.tuning[stringIndex]) + cellMidiOffset(parsed);
 					playNote(midiToFreq(midi), time, 0.35, liveTrack.volume ?? 1);
 				});
 			});

@@ -27,6 +27,13 @@ export interface YoutubeSyncHandle {
 const VIDEO_VOLUME_KEY = "tab-editor:yt-volume";
 const MASTER_VOLUME_KEY = "tab-editor:master-volume";
 
+// mm:ss.mmm for the sync readout.
+function formatVideoTime(totalSeconds: number): string {
+	const minutes = Math.floor(totalSeconds / 60);
+	const seconds = totalSeconds - minutes * 60;
+	return `${minutes}:${seconds.toFixed(3).padStart(6, "0")}`;
+}
+
 function readStoredVolume(key: string): number {
 	const raw = localStorage.getItem(key);
 	const value = raw == null ? NaN : Number(raw);
@@ -220,6 +227,27 @@ const YoutubeSyncPanel = forwardRef<YoutubeSyncHandle, Props>(function YoutubeSy
 									<CloseIcon />
 								</button>
 							</div>
+								{/* Sync readout + fine-tune: the anchor is the whole sync
+								    model, so show it and let it be nudged in 50ms steps. */}
+								<div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-hairline text-[11px] font-mono">
+									<span className="text-ink-faint uppercase tracking-wide flex-1 truncate">
+										sync · #{youtube.anchorMeasure + 1} ↔ {formatVideoTime(youtube.anchorSeconds)}
+									</span>
+									<button
+										className="btn text-[11px] px-1.5 py-0.5 font-mono"
+										title="Nudge video 50ms earlier relative to the tab"
+										onClick={() => onSetAnchor(youtube.anchorMeasure, Math.max(0, youtube.anchorSeconds - 0.05))}
+									>
+										−50ms
+									</button>
+									<button
+										className="btn text-[11px] px-1.5 py-0.5 font-mono"
+										title="Nudge video 50ms later relative to the tab"
+										onClick={() => onSetAnchor(youtube.anchorMeasure, youtube.anchorSeconds + 0.05)}
+									>
+										+50ms
+									</button>
+								</div>
 						</>
 					) : null}
 

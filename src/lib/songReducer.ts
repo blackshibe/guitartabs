@@ -133,6 +133,9 @@ function resolveMirrorSet(ranges: SectionRange[], track: Track, start: number): 
 
 function spliceNotes(notes: string[], at: number, insert: string[]): string[] {
 	const next = notes.slice();
+	// The notes array is lazily grown, so it may be shorter than `at` — pad
+	// first or the splice would land the inserted notes at the wrong measure.
+	while (next.length < at) next.push("");
 	next.splice(at, 0, ...insert);
 	return next;
 }

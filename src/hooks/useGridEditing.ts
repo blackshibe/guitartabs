@@ -2,6 +2,7 @@ import { useEffect, type Dispatch, type KeyboardEvent, type SetStateAction } fro
 import type { CellPos, RangeSelection, Track } from "../types";
 import { COLS_PER_MEASURE } from "../lib/instruments";
 import { globalCol, normalizeRect } from "../lib/clipboard";
+import { toggleHarmonic } from "../lib/harmonics";
 import type { SongAction } from "../lib/songReducer";
 
 interface UseGridEditingArguments {
@@ -109,6 +110,22 @@ export function useGridEditing({
 				value: nextValue,
 			});
 			setSelection({ anchor: focus, focus });
+			return;
+		}
+
+		if (event.key === "h" || event.key === "H") {
+			event.preventDefault();
+			const current = activeTrack.measures[focus.measure][focus.column][focus.stringIndex];
+			if (current !== null && current !== "") {
+				dispatch({
+					type: "set-cell",
+					trackId: activeTrack.id,
+					measure: focus.measure,
+					column: focus.column,
+					stringIndex: focus.stringIndex,
+					value: toggleHarmonic(current),
+				});
+			}
 			return;
 		}
 

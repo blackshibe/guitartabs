@@ -41,10 +41,13 @@ export default function TransportBar({
 		onSeek(Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)));
 	};
 
+	// z-50 on the bar: it is a stacking context, so its shortcut-help popover
+	// can never exceed the bar's own layer — at z-30 the Sound panel (z-40)
+	// painted over the popover. Modals/toast stay above via DOM order.
 	return (
 		<div
 			data-keep-selection
-			className="fixed bottom-0 left-0 right-0 z-30 bg-plate-raised border-t border-hairline-strong"
+			className="fixed bottom-0 left-0 right-0 z-50 bg-plate-raised border-t border-hairline-strong"
 		>
 			<div className="h-1.5 bg-plate cursor-pointer group" onClick={handleSeek} title="Seek">
 				<div

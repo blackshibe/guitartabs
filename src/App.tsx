@@ -22,6 +22,7 @@ import YoutubeSyncPanel, { type YoutubeSyncHandle } from "./components/YoutubeSy
 import TransportBar from "./components/TransportBar";
 import Toast from "./components/Toast";
 import ImportConflictDialog from "./components/ImportConflictDialog";
+import WelcomeDialog from "./components/WelcomeDialog";
 import GhostScreen from "./components/GhostScreen";
 
 function blankSong(): Song {
@@ -48,6 +49,7 @@ export default function App() {
 
 	const [activeTrackId, setActiveTrackId] = useState<number>(initialSong.tracks[0]?.id);
 	const [tuningEditorTrackId, setTuningEditorTrackId] = useState<number | null>(null);
+	const [showWelcome, setShowWelcome] = useState<boolean>(() => localStorage.getItem("tab-editor:welcomed") == null);
 	const sectionRefs = useRef<Record<number, HTMLDivElement | null>>({});
 	const youtubePlayerRef = useRef<YoutubeSyncHandle | null>(null);
 
@@ -286,10 +288,15 @@ export default function App() {
 						measureCount={measureCount}
 						measureNotes={measureNotes}
 						canDeleteSection={sections.length > 1}
+						stepDurationMs={(60 / bpm / 2) * 1000}
 						selected={selection}
 						playhead={playhead}
 						gridRef={gridRef}
-						onCellMouseDown={handleCellMouseDown}
+						onCellMouseDown={(measure, column, stringIndex, shiftKey) => {
+							handleCellMouseDown(measure, column, stringIndex, shiftKey);
+							// Clicking a cell mid-playback jumps playback there.
+							if (isPlaying && !shiftKey) startPlayback(globalCol(measure, column));
+						}}
 						onCellEnter={handleCellEnter}
 						onDeleteMeasure={deleteMeasure}
 						onInsertMeasureAfter={(measure) => dispatch({ type: "insert-measure", after: measure })}
@@ -362,6 +369,14 @@ export default function App() {
 					conflicts={library.importConflicts.conflicts}
 					existing={library.librarySongs}
 					onConfirm={library.resolveImportConflicts}
+				/>
+			)}
+			{showWelcome && (
+				<WelcomeDialog
+					onDismiss={() => {
+						localStorage.setItem("tab-editor:welcomed", "1");
+						setShowWelcome(false);
+					}}
 				/>
 			)}
 		</div>
