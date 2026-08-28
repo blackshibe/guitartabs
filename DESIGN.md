@@ -80,7 +80,7 @@ This world shipped dark-only by explicit direction mid-build — it began as a l
 - One family, Inter, doing every job (display, UI, labels) through weight and size steps, plus JetBrains Mono for the grid itself and all numeric/note data — a distinct display serif was tried mid-build and rejected twice by direct feedback ("ugly", "handwriting serif"); the system is deliberately single-family now, and that decision should not be revisited without a new, equally direct request
 - Square corners everywhere, hairline dividers instead of cards or shadows for structure
 - A single floating corner widget (reference video) and a single fixed bottom transport bar — carrying both playback AND the add-measure/add-section actions — are the only two elements that leave the document flow
-- Authored stroke-SVG icons for UI chrome; genuine music notation (repeat marks, tie mark) is drawn in literal Unicode glyphs as earned notation, not decoration
+- Stroke icons from lucide-react for UI chrome, themed once in `Icons.tsx` (1em, 1.75px stroke) — swapped from a hand-authored set by explicit request; genuine music notation (repeat marks, tie mark) is drawn in literal Unicode glyphs as earned notation, not decoration
 - The focused cell and the playhead share one visual language — a vertical caret line — rather than a boxed highlight; "current position" always reads as a line, never a filled rectangle
 
 ## Colors
@@ -182,8 +182,8 @@ Two related but distinct markers, both drawn as vertical lines rather than boxes
 - **Playhead:** a single absolutely-positioned overlay element per visible line — a 2px crimson left border with a tinted crimson fill the width of one cell — computed from the active line's geometry (`playheadLeft()` in `TabGrid.tsx`) and animated with `transition-[left] duration-150 ease-out`. It is not a per-cell class swap; the overlay itself translates, which is what makes it "glide" across the line rather than jump cell-to-cell.
 - **Focus caret:** the keyboard-focused cell renders `border-l-2 border-l-accent` plus the same 10%-tint fill directly on the cell button (`cellClass` in `TabGrid.tsx`) — a caret at the cell's leading edge, not a boxed outline. This replaced an `outline`-based focus ring specifically so the "current cell" and "current playhead step" read as the same kind of mark; a multi-cell drag selection still gets the plain tint fill with no caret, since only the single focus point is "the cursor."
 
-### Authored Icon Set
-A small set of hand-authored stroke SVGs (`src/components/Icons.tsx`: Play, Stop, SkipStart, Gear, Help, Insert, Close) at a single consistent 1.6px stroke weight, no fill, sized to `1em` so they scale with surrounding text. These stand in for all generic UI chrome that would otherwise use bare Unicode glyphs (✕, ▶, ⚙). Genuine music notation — the repeat-bracket marks (𝄆 𝄇) and the section-link tie mark (⌒) — is deliberately left as literal engraved characters, not converted to the icon set, because it is earned notation belonging to the score itself, not interchangeable UI chrome.
+### Icon Set
+UI chrome icons come from lucide-react (explicit user request replaced the earlier hand-authored set), wrapped once in `src/components/Icons.tsx`: every icon is themed there (`1em` sizing, 1.75px stroke, no fill) and re-exported under stable names (PlayIcon, CloseIcon, …) so call sites never import the library directly. New icons must go through the same wrapper. These stand in for all generic UI chrome that would otherwise use bare Unicode glyphs (✕, ▶, ⚙). Genuine music notation — the repeat-bracket marks (𝄆 𝄇) and the section-link tie mark (⌒) — is deliberately left as literal engraved characters, not converted to the icon set, because it is earned notation belonging to the score itself, not interchangeable UI chrome.
 
 ## Do's and Don'ts
 
@@ -193,7 +193,7 @@ A small set of hand-authored stroke SVGs (`src/components/Icons.tsx`: Play, Stop
 - **Do** use square corners everywhere; the global `border-radius: 0 !important` reset is a committed identity trait of this world, not a temporary default.
 - **Do** express depth with hairline borders and plate/plate-raised/plate-sunken tonal steps before reaching for a shadow; reserve shadows for elements that have actually left document flow (modal, popover, floating widget, toast).
 - **Do** keep the instrument-tab/section-jump utility bar pinned/sticky above the scrolling score, and every editing/playback action (add-measure, add-section, play, seek, BPM) inside the fixed bottom transport bar — both were direct build-time fixes for controls that "don't move with the page," not optional chrome.
-- **Do** author new UI iconography as consistent-stroke SVGs matching `Icons.tsx`'s 1.6px stroke convention; do not reach for bare Unicode glyphs for generic chrome.
+- **Do** add new UI iconography as lucide-react icons wrapped through `Icons.tsx`'s themed helper; do not import lucide directly at call sites or reach for bare Unicode glyphs for generic chrome.
 - **Do** mark "current position" (focus, playhead) as a vertical caret line, never a boxed outline — see The Playhead and the Focus Caret.
 - **Do** treat Inter-only typography (weight/size hierarchy, no second display family) as the committed system — it survived two rounds of direct user rejection of serif alternatives.
 

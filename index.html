@@ -1,41 +1,13 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Guitar Tab Editor</title>
-  </head>
-  <body>
-    <!--
-      THESIS: The song is an engraved score you edit live, not a spreadsheet
-      of cells — refuses the flat toolbar-over-grid SaaS-editor default.
-      OWN-WORLD: The plate itself, not the printed paper — near-black warm
-      metal ground (user-pinned: dark only), light-etched ink, one crimson
-      transport accent, slate for secondary state. Bodoni Moda display,
-      Inter UI text, JetBrains Mono grid. Hairline staff rules, bracketed
-      section systems, engraved repeat marks. A pinned floating reference
-      video docks the opposite corner from transport, Songsterr-style.
-      STORY: A solo guitarist opens a song and sees it laid out like a real
-      score — sections bracketed, the active instrument's staff full width,
-      loops marked with real repeat signs — and edits it as fast as before,
-      now with structure that is visible instead of implied.
-      FIRST VIEWPORT: A pinned utility bar (add-measure/section, instrument
-      tabs, section jump) stays reachable while the score scrolls under it.
-      Center: the active track's staff as the editable grid — one system on
-      screen at a time, switched by instrument tab, never all tracks
-      stacked at once. Bottom: a fixed transport bar (play, BPM, scrub
-      rule) in the Songsterr idiom. Top-right: the reference-video corner
-      widget. Signature interaction: the playhead is a crimson rule that
-      glides across the active line (150ms ease-out) as playback steps
-      forward, never an instant cut.
-      FORM: The Engraver's Plate, assigned index 5 of 7 grounded candidates,
-      seed key 736e541e.
-      FINISH: unreviewed and undocumented is unfinished; this build ends
-      with the finish review, the verdict, DESIGN.md, and every shipping
-      raster carrying its provenance.
-    -->
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+	<head>
+		<meta charset="UTF-8" />
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Guitar Tab Editor</title>
+	</head>
+	<body>
+		<div id="root"></div>
+		<script type="module" src="/src/main.tsx"></script>
+	</body>
 </html>

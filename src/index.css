@@ -1,109 +1,147 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-@import 'tailwindcss';
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap");
+@import "tailwindcss";
 
 @theme {
-  /* The plate itself, not the printed paper: a blackened engraving plate
+	/* The plate itself, not the printed paper: a blackened engraving plate
      under a raking work light — near-black warm metal, lines etched in
      light ink, one crimson transport accent. */
-  --color-plate: #171511;
-  --color-plate-raised: #201d18;
-  --color-plate-sunken: #2a2620;
-  --color-ink: #ece6d8;
-  --color-ink-soft: #9aa7b0;
-  --color-ink-faint: #9c9382;
-  --color-accent: #d65a48;
-  --color-accent-ink: #171511;
-  --color-hairline: #3a352c;
-  --color-hairline-strong: #4c4638;
+	--color-plate: #171511;
+	--color-plate-raised: #201d18;
+	--color-plate-sunken: #2a2620;
+	--color-ink: #ece6d8;
+	--color-ink-soft: #9aa7b0;
+	--color-ink-faint: #9c9382;
+	--color-accent: #d65a48;
+	--color-accent-ink: #171511;
+	--color-hairline: #3a352c;
+	--color-hairline-strong: #4c4638;
 
-  --font-display: 'Inter', ui-sans-serif, system-ui, sans-serif;
-  --font-ui: 'Inter', ui-sans-serif, system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
+	--font-display: "Inter", ui-sans-serif, system-ui, sans-serif;
+	--font-ui: "Inter", ui-sans-serif, system-ui, sans-serif;
+	--font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
 }
 
 @layer base {
-  html {
-    color-scheme: dark;
-  }
+	html {
+		color-scheme: dark;
+	}
 
-  body {
-    margin: 0;
-    background: var(--color-plate);
-    color: var(--color-ink);
-    font-family: var(--font-ui);
-    text-underline-offset: 2px;
-  }
+	body {
+		margin: 0;
+		background: var(--color-plate);
+		color: var(--color-ink);
+		font-family: var(--font-ui);
+		text-underline-offset: 2px;
+	}
 
-  ::selection {
-    background: var(--color-accent);
-    color: var(--color-accent-ink);
-  }
+	::selection {
+		background: var(--color-accent);
+		color: var(--color-accent-ink);
+	}
 
-  * {
-    caret-color: var(--color-accent);
-  }
+	* {
+		caret-color: var(--color-accent);
+	}
 
-  :focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 1px;
-  }
+	:focus-visible {
+		outline: 2px solid var(--color-accent);
+		outline-offset: 1px;
+	}
 
-  ::-webkit-scrollbar {
-    width: 12px;
-    height: 12px;
-  }
-  ::-webkit-scrollbar-track {
-    background: var(--color-plate);
-  }
-  ::-webkit-scrollbar-thumb {
-    background: var(--color-hairline-strong);
-    border: 3px solid var(--color-plate);
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    background: var(--color-ink-faint);
-  }
+	::-webkit-scrollbar {
+		width: 12px;
+		height: 12px;
+	}
+	::-webkit-scrollbar-track {
+		background: var(--color-plate);
+	}
+	::-webkit-scrollbar-thumb {
+		background: var(--color-hairline-strong);
+		border: 3px solid var(--color-plate);
+	}
+	::-webkit-scrollbar-thumb:hover {
+		background: var(--color-ink-faint);
+	}
 
-  * {
-    scrollbar-color: var(--color-hairline-strong) var(--color-plate);
-  }
+	* {
+		scrollbar-color: var(--color-hairline-strong) var(--color-plate);
+	}
 
-  /* Native number-input spinners clash with the flat underline fields. */
-  input[type='number'] {
-    -moz-appearance: textfield;
-    appearance: textfield;
-  }
-  input[type='number']::-webkit-outer-spin-button,
-  input[type='number']::-webkit-inner-spin-button {
-    -webkit-appearance: none;
-    appearance: none;
-    margin: 0;
-  }
+	/* Sliders in the plate language: a hairline score for the track, a caret
+     bar (the system's "position is a line" motif) for the thumb — the chunky
+     native widget doesn't belong on the plate. */
+	input[type="range"] {
+		-webkit-appearance: none;
+		appearance: none;
+		height: 14px;
+		background: transparent;
+		cursor: pointer;
+	}
+	input[type="range"]::-webkit-slider-runnable-track {
+		height: 2px;
+		background: var(--color-hairline-strong);
+	}
+	input[type="range"]::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 3px;
+		height: 14px;
+		margin-top: -6px;
+		background: var(--color-accent);
+		border: none;
+	}
+	input[type="range"]::-moz-range-track {
+		height: 2px;
+		background: var(--color-hairline-strong);
+	}
+	input[type="range"]::-moz-range-progress {
+		height: 2px;
+		background: var(--color-ink-faint);
+	}
+	input[type="range"]::-moz-range-thumb {
+		width: 3px;
+		height: 14px;
+		background: var(--color-accent);
+		border: none;
+	}
+
+	/* Native number-input spinners clash with the flat underline fields. */
+	input[type="number"] {
+		-moz-appearance: textfield;
+		appearance: textfield;
+	}
+	input[type="number"]::-webkit-outer-spin-button,
+	input[type="number"]::-webkit-inner-spin-button {
+		-webkit-appearance: none;
+		appearance: none;
+		margin: 0;
+	}
 }
 
 @layer components {
-  /* A button reads as a struck key, not bare text: one tonal step lighter
+	/* A button reads as a struck key, not bare text: one tonal step lighter
      than its ground, a hairline edge, full-ink label. Transparent text-only
      "ghost" buttons were rejected in review — background-colored interaction
      items read as poor-contrast non-buttons. */
-  .btn {
-    background-color: var(--color-plate-sunken);
-    border: 1px solid var(--color-hairline-strong);
-    color: var(--color-ink);
-    transition-property: color, border-color, background-color, opacity;
-    transition-duration: 150ms;
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--color-ink-faint);
-  }
-  .btn:disabled {
-    opacity: 0.35;
-  }
-  .btn-danger:hover:not(:disabled) {
-    color: var(--color-accent);
-    border-color: var(--color-accent);
-  }
+	.btn {
+		background-color: var(--color-plate-sunken);
+		border: 1px solid var(--color-hairline-strong);
+		color: var(--color-ink);
+		transition-property: color, border-color, background-color, opacity;
+		transition-duration: 150ms;
+	}
+	.btn:hover:not(:disabled) {
+		border-color: var(--color-ink-faint);
+	}
+	.btn:disabled {
+		opacity: 0.35;
+	}
+	.btn-danger:hover:not(:disabled) {
+		color: var(--color-accent);
+		border-color: var(--color-accent);
+	}
 }
 
 * {
-  border-radius: 0 !important;
+	border-radius: 0 !important;
 }

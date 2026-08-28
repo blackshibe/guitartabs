@@ -1,87 +1,49 @@
-// Authored line icons, one consistent 1.6px stroke, no fill — the engraved
-// plate's own drawn vocabulary standing in for Unicode glyph chrome.
+// Icon set backed by lucide-react (stroke icons, no fill), themed once here:
+// 1em sizing so icons scale with surrounding text, and a stroke weight close
+// to the plate's hairline language. Components keep their original names so
+// call sites never care about the library.
+import {
+	ArrowLeft,
+	ChevronDown,
+	ChevronUp,
+	CircleHelp,
+	ClipboardPaste,
+	Download,
+	Maximize2,
+	Minimize2,
+	Play,
+	Settings,
+	SkipBack,
+	Square,
+	Trash2,
+	Upload,
+	X,
+	type LucideIcon,
+} from "lucide-react";
+
 interface IconProps {
-  className?: string
+	className?: string;
 }
 
-const base = 'w-[1em] h-[1em] inline-block align-[-0.14em]'
-const strokeProps = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const }
-
-export function PlayIcon({ className = '' }: IconProps) {
-  return (
-    <svg viewBox="0 0 16 16" className={`${base} ${className}`} {...strokeProps}>
-      <path d="M4 2.5 L13 8 L4 13.5 Z" />
-    </svg>
-  )
+function themed(Icon: LucideIcon) {
+	// oxlint-disable-next-line only-export-components -- every export IS a component; the HOC just hides that from the checker
+	return function ThemedIcon({ className = "" }: IconProps) {
+		return <Icon size="1em" strokeWidth={1.75} className={`inline-block align-[-0.14em] ${className}`} />;
+	};
 }
 
-export function StopIcon({ className = '' }: IconProps) {
-  return (
-    <svg viewBox="0 0 16 16" className={`${base} ${className}`} {...strokeProps}>
-      <rect x="3.5" y="3.5" width="9" height="9" />
-    </svg>
-  )
-}
-
-export function SkipStartIcon({ className = '' }: IconProps) {
-  return (
-    <svg viewBox="0 0 16 16" className={`${base} ${className}`} {...strokeProps}>
-      <path d="M4.5 3 V13" />
-      <path d="M12 3 L5.5 8 L12 13 Z" />
-    </svg>
-  )
-}
-
-export function GearIcon({ className = '' }: IconProps) {
-  return (
-    <svg viewBox="0 0 16 16" className={`${base} ${className}`} {...strokeProps}>
-      <circle cx="8" cy="8" r="2.4" />
-      <path d="M8 2.4 V4.2 M8 11.8 V13.6 M13.6 8 H11.8 M4.2 8 H2.4 M11.9 4.1 L10.6 5.4 M5.4 10.6 L4.1 11.9 M11.9 11.9 L10.6 10.6 M5.4 5.4 L4.1 4.1" />
-    </svg>
-  )
-}
-
-export function HelpIcon({ className = '' }: IconProps) {
-  return (
-    <svg viewBox="0 0 16 16" className={`${base} ${className}`} {...strokeProps}>
-      <circle cx="8" cy="8" r="6.2" />
-      <path d="M6 6.3c0-1.2 1-2 2-2s2 .7 2 1.8c0 1.4-2 1.4-2 3" />
-      <circle cx="8" cy="11.2" r="0.15" fill="currentColor" stroke="none" />
-    </svg>
-  )
-}
-
-export function InsertIcon({ className = '' }: IconProps) {
-  return (
-    <svg viewBox="0 0 16 16" className={`${base} ${className}`} {...strokeProps}>
-      <path d="M8 2.5 V9.5 M5 6.5 L8 9.5 L11 6.5" />
-      <path d="M3 12.5 H13" />
-    </svg>
-  )
-}
-
-export function ExpandIcon({ className = '' }: IconProps) {
-  return (
-    <svg viewBox="0 0 16 16" className={`${base} ${className}`} {...strokeProps}>
-      <path d="M9.5 2.5 H13.5 V6.5 M13.5 2.5 L9.2 6.8" />
-      <path d="M6.5 13.5 H2.5 V9.5 M2.5 13.5 L6.8 9.2" />
-    </svg>
-  )
-}
-
-export function ShrinkIcon({ className = '' }: IconProps) {
-  return (
-    <svg viewBox="0 0 16 16" className={`${base} ${className}`} {...strokeProps}>
-      <path d="M13.8 2.2 L9.6 6.4 M9.6 3.2 V6.4 H12.8" />
-      <path d="M2.2 13.8 L6.4 9.6 M6.4 12.8 V9.6 H3.2" />
-    </svg>
-  )
-}
-
-export function CloseIcon({ className = '' }: IconProps) {
-  return (
-    <svg viewBox="0 0 16 16" className={`${base} ${className}`} {...strokeProps}>
-      <path d="M4 4 L12 12 M12 4 L4 12" />
-    </svg>
-  )
-}
+export const BackIcon = themed(ArrowLeft);
+export const MoveUpIcon = themed(ChevronUp);
+export const MoveDownIcon = themed(ChevronDown);
+export const TrashIcon = themed(Trash2);
+export const PlayIcon = themed(Play);
+export const StopIcon = themed(Square);
+export const SkipStartIcon = themed(SkipBack);
+export const GearIcon = themed(Settings);
+export const HelpIcon = themed(CircleHelp);
+export const InsertIcon = themed(ClipboardPaste);
+export const ExpandIcon = themed(Maximize2);
+export const ShrinkIcon = themed(Minimize2);
+export const CloseIcon = themed(X);
+export const DownloadIcon = themed(Download);
+export const UploadIcon = themed(Upload);
