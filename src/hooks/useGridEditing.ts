@@ -1,18 +1,20 @@
 import { useEffect, type Dispatch, type KeyboardEvent, type SetStateAction } from "react";
 import type { CellPos, RangeSelection, Track } from "../types";
-import { COLS_PER_MEASURE } from "../lib/instruments";
-import { globalCol, normalizeRect } from "../lib/clipboard";
-import { toggleHarmonic } from "../lib/harmonics";
+import { normalizeRect } from "../lib/clipboard";
+import { cycleRing, toggleHarmonic, typeDigit } from "../lib/cellValue";
+import { locateStep, slotForMeasure, stepOf, type ProgressionSlot } from "../lib/progression";
 import type { SongAction } from "../lib/songReducer";
 
 interface UseGridEditingArguments {
 	activeTrack: Track | undefined;
-	measureCount: number;
+	slots: ProgressionSlot[];
+	activeSlot: number;
+	setActiveSlot: Dispatch<SetStateAction<number>>;
 	selection: RangeSelection | null;
 	setSelection: Dispatch<SetStateAction<RangeSelection | null>>;
 	dispatch: Dispatch<SongAction | { type: "undo" } | { type: "redo" }>;
 	isPlaying: boolean;
-	startPlayback: (fromStep?: number) => void;
+	startPlayback: (fromStep?: number, skipLeadIn?: boolean) => void;
 	stopPlayback: () => void;
 	copySelection: () => void;
 	cutSelection: () => void;
@@ -21,9 +23,16 @@ interface UseGridEditingArguments {
 
 // Keyboard-first grid editing: digit entry, navigation, clipboard shortcuts,
 // space-to-play — plus the window-level undo/redo listener.
+//
+// Horizontal navigation walks the EXPANDED timeline (the progression's slot
+// list), not the raw measure order, so moving right off the end of a section
+// lands in whatever the arrangement plays next — including the next pass of a
+// section that repeats.
 export function useGridEditing({
 	activeTrack,
-	measureCount,
+	slots,
+	activeSlot,
+	setActiveSlot,
 	selection,
 	setSelection,
 	dispatch,
@@ -53,15 +62,24 @@ export function useGridEditing({
 		return () => window.removeEventListener("keydown", onKey);
 	}, [dispatch]);
 
+	const slotFor = (measure: number) => slotForMeasure(slots, measure, activeSlot);
+
 	const handleGridKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
 		// Don't hijack typing in text fields (section names, comments, measure notes).
 		const target = event.target as HTMLElement;
 		if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
 
+		const focusStep = () => {
+			if (!selection) return 0;
+			const slot = slotFor(selection.focus.measure);
+			return slot ? stepOf(slot, selection.focus.measure, selection.focus.column) : 0;
+		};
+
 		if (event.key === " ") {
 			event.preventDefault();
 			if (isPlaying) stopPlayback();
-			else startPlayback(selection ? globalCol(selection.focus.measure, selection.focus.column) : 0);
+			// Jumping to a cursor skips the lead-in; from the top it rolls through.
+			else startPlayback(focusStep(), selection !== null);
 			return;
 		}
 
@@ -81,51 +99,63 @@ export function useGridEditing({
 			if (key === "v") {
 				event.preventDefault();
 				void pasteAtSelection();
-				return;
 			}
+			// Any other chord (Ctrl+S, Ctrl+H…) belongs to the browser — falling
+			// through would let the plain-key branches edit the focused cell.
+			return;
 		}
 
 		if (!selection || !activeTrack) return;
 		const { focus } = selection;
+		const currentSlot = slotFor(focus.measure);
 
-		const setFocus = (measure: number, column: number, stringIndex: number, extend: boolean) => {
-			event.preventDefault();
-			const position: CellPos = { measure, column, stringIndex };
+		const setFocus = (position: CellPos, extend: boolean) => {
 			setSelection((previous) =>
 				extend && previous ? { anchor: previous.anchor, focus: position } : { anchor: position, focus: position },
 			);
 		};
 
-		if (event.key >= "0" && event.key <= "9") {
-			event.preventDefault();
-			const current = activeTrack.measures[focus.measure][focus.column][focus.stringIndex];
-			let nextValue = current === null || current === "" ? event.key : String(Number(current + event.key));
-			if (nextValue.length > 2 || Number(nextValue) > 24) nextValue = event.key;
+		const stepBy = (delta: number, extend: boolean): boolean => {
+			if (!currentSlot) return false;
+			const at = locateStep(slots, stepOf(currentSlot, focus.measure, focus.column) + delta);
+			if (!at) return false;
+			setActiveSlot(at.slot.index);
+			setFocus({ measure: at.measure, column: at.column, stringIndex: focus.stringIndex }, extend);
+			return true;
+		};
+
+		const editFocus = (value: string | null) => {
 			dispatch({
 				type: "set-cell",
 				trackId: activeTrack.id,
 				measure: focus.measure,
 				column: focus.column,
 				stringIndex: focus.stringIndex,
-				value: nextValue,
+				value,
 			});
+		};
+
+		const currentValue = () => activeTrack.measures[focus.measure]?.[focus.column]?.[focus.stringIndex] ?? null;
+
+		if (event.key >= "0" && event.key <= "9") {
+			event.preventDefault();
+			editFocus(typeDigit(currentValue(), event.key));
 			setSelection({ anchor: focus, focus });
 			return;
 		}
 
 		if (event.key === "h" || event.key === "H") {
 			event.preventDefault();
-			const current = activeTrack.measures[focus.measure][focus.column][focus.stringIndex];
-			if (current !== null && current !== "") {
-				dispatch({
-					type: "set-cell",
-					trackId: activeTrack.id,
-					measure: focus.measure,
-					column: focus.column,
-					stringIndex: focus.stringIndex,
-					value: toggleHarmonic(current),
-				});
-			}
+			const current = currentValue();
+			if (current !== null && current !== "") editFocus(toggleHarmonic(current));
+			return;
+		}
+
+		// Sustain: ring this note for 1 → 2 → 4 bars, then off.
+		if (event.key === "s" || event.key === "S") {
+			event.preventDefault();
+			const current = currentValue();
+			if (current !== null && current !== "") editFocus(cycleRing(current));
 			return;
 		}
 
@@ -135,33 +165,32 @@ export function useGridEditing({
 			return;
 		}
 		if (event.key === "ArrowUp") {
-			if (focus.stringIndex > 0) setFocus(focus.measure, focus.column, focus.stringIndex - 1, event.shiftKey);
-			else event.preventDefault();
+			event.preventDefault();
+			if (focus.stringIndex > 0)
+				setFocus({ ...focus, stringIndex: focus.stringIndex - 1 }, event.shiftKey);
 			return;
 		}
 		if (event.key === "ArrowDown") {
+			event.preventDefault();
 			if (focus.stringIndex < activeTrack.tuning.length - 1)
-				setFocus(focus.measure, focus.column, focus.stringIndex + 1, event.shiftKey);
-			else event.preventDefault();
+				setFocus({ ...focus, stringIndex: focus.stringIndex + 1 }, event.shiftKey);
 			return;
 		}
 		if (event.key === "ArrowLeft" || (event.key === "Tab" && event.shiftKey)) {
 			event.preventDefault();
-			if (focus.column > 0) setFocus(focus.measure, focus.column - 1, focus.stringIndex, event.shiftKey);
-			else if (focus.measure > 0)
-				setFocus(focus.measure - 1, COLS_PER_MEASURE - 1, focus.stringIndex, event.shiftKey);
+			stepBy(-1, event.shiftKey);
 			return;
 		}
 		if (event.key === "ArrowRight" || event.key === "Tab") {
 			event.preventDefault();
-			if (focus.column < COLS_PER_MEASURE - 1)
-				setFocus(focus.measure, focus.column + 1, focus.stringIndex, event.shiftKey);
-			else if (focus.measure < measureCount - 1) setFocus(focus.measure + 1, 0, focus.stringIndex, event.shiftKey);
-			else {
-				// At the very end the grid grows under the cursor.
-				dispatch({ type: "insert-measure", after: measureCount - 1 });
-				setFocus(measureCount, 0, focus.stringIndex, false);
-			}
+			if (stepBy(1, event.shiftKey)) return;
+			// Past the last step of the arrangement the grid grows under the
+			// cursor: a bar joins whichever section is played last.
+			const lastSlot = slots[slots.length - 1];
+			if (!lastSlot) return;
+			const grewAfter = lastSlot.startMeasure + lastSlot.span - 1;
+			dispatch({ type: "insert-measure", after: grewAfter });
+			setFocus({ measure: grewAfter + 1, column: 0, stringIndex: focus.stringIndex }, false);
 			return;
 		}
 		if (event.key === "Escape") setSelection(null);

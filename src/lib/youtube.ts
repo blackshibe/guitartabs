@@ -67,6 +67,25 @@ export function extractVideoId(input: string): string | null {
 
 // Video time for global column `column`, given the song's tempo and one
 // anchor point (anchorMeasure's downbeat ↔ anchorSeconds). Constant tempo.
+function lerp(from: number, to: number, t: number): number {
+	return from + (to - from) * t;
+}
+
+// May return negative: the tab's clock can start before the video's 0:00, and
+// the caller (playback's hold-then-start logic) needs that sign preserved.
+// `secondsAt` maps a timeline column to elapsed tab seconds — per-section
+// tempo overrides live in that mapping, not here.
+export function videoSecondsForStep(
+	youtube: { anchorMeasure: number; anchorSeconds: number },
+	colsPerMeasure: number,
+	column: number,
+	secondsAt: (column: number) => number,
+): number {
+	const anchorColumn = youtube.anchorMeasure * colsPerMeasure;
+	return youtube.anchorSeconds + secondsAt(column) - secondsAt(anchorColumn);
+}
+
+/** Constant-tempo anchor conversion. */
 export function videoSecondsForCol(
 	youtube: { anchorMeasure: number; anchorSeconds: number },
 	bpm: number,
@@ -74,6 +93,5 @@ export function videoSecondsForCol(
 	column: number,
 ): number {
 	const secondsPerColumn = 60 / bpm / 2;
-	const anchorColumn = youtube.anchorMeasure * colsPerMeasure;
-	return Math.max(0, youtube.anchorSeconds + (column - anchorColumn) * secondsPerColumn);
+	return videoSecondsForStep(youtube, colsPerMeasure, column, (col) => lerp(0, secondsPerColumn, col));
 }

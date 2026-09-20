@@ -1,10 +1,18 @@
 import { useEffect, useRef, useState } from "react";
+import { slotForMeasure, type ProgressionSlot } from "../lib/progression";
 import type { CellPos, RangeSelection, Track } from "../types";
 
 // The grid selection: a {anchor, focus} rect over cells, plus the drag and
 // focus plumbing that keeps it usable.
-export function useSelection(activeTrack: Track | undefined, measureCount: number) {
+//
+// Cells are addressed by SOURCE measure, but the same measure can be on
+// screen several times over (a section the progression plays more than once),
+// so the hook also tracks which rendered slot the cursor is actually in. The
+// selection tint shows in every copy — they are the same bars — while the
+// focus caret only ever draws in the active slot.
+export function useSelection(activeTrack: Track | undefined, measureCount: number, slots: ProgressionSlot[]) {
 	const [selection, setSelection] = useState<RangeSelection | null>(null);
+	const [activeSlot, setActiveSlot] = useState(0);
 	const draggingRef = useRef(false);
 	const gridRef = useRef<HTMLDivElement | null>(null);
 
@@ -37,21 +45,42 @@ export function useSelection(activeTrack: Track | undefined, measureCount: numbe
 		});
 	}, [measureCount, activeTrack]);
 
-	const handleCellMouseDown = (measure: number, column: number, stringIndex: number, shiftKey: boolean) => {
+	// Rearranging the progression can retire OR reshuffle the slot the cursor
+	// was sitting in (move-entry keeps the count but renumbers the slots) —
+	// re-home the caret to a slot that still shows its measure.
+	useEffect(() => {
+		setActiveSlot((previous) => {
+			const slot = slots[previous];
+			if (!selection) return slot ? previous : 0;
+			const { measure } = selection.focus;
+			if (slot && measure >= slot.startMeasure && measure < slot.startMeasure + slot.span) return previous;
+			return slotForMeasure(slots, measure)?.index ?? 0;
+		});
+	}, [slots, selection]);
+
+	const handleCellMouseDown = (position: CellPos, slotIndex: number, shiftKey: boolean) => {
 		draggingRef.current = true;
-		const position: CellPos = { measure, column, stringIndex };
+		setActiveSlot(slotIndex);
 		setSelection((previous) =>
 			shiftKey && previous ? { anchor: previous.anchor, focus: position } : { anchor: position, focus: position },
 		);
 		focusGrid();
 	};
 
-	const handleCellEnter = (measure: number, column: number, stringIndex: number) => {
+	const handleCellEnter = (position: CellPos, slotIndex: number) => {
 		if (!draggingRef.current) return;
-		setSelection((previous) =>
-			previous ? { anchor: previous.anchor, focus: { measure, column, stringIndex } } : previous,
-		);
+		setActiveSlot(slotIndex);
+		setSelection((previous) => (previous ? { anchor: previous.anchor, focus: position } : previous));
 	};
 
-	return { selection, setSelection, gridRef, focusGrid, handleCellMouseDown, handleCellEnter };
+	return {
+		selection,
+		setSelection,
+		activeSlot,
+		setActiveSlot,
+		gridRef,
+		focusGrid,
+		handleCellMouseDown,
+		handleCellEnter,
+	};
 }

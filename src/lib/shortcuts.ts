@@ -3,6 +3,7 @@
 export const SHORTCUTS: [string, string][] = [
 	["0-9", "set fret"],
 	["H", "toggle harmonic ◇"],
+	["S", "sustain 1 / 2 / 4 bars"],
 	["↑ ↓", "move string"],
 	["← → Tab", "move column"],
 	["Shift+arrows / drag", "select range"],

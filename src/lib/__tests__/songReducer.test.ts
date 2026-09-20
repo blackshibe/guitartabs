@@ -154,58 +154,67 @@ describe("linked sections", () => {
 	});
 });
 
-describe("track loops", () => {
-	it("set-track-loop mirrors bars beyond the unit and records the unit", () => {
-		const seeded = songReducer(stateOf(buildSong()), {
-			type: "set-cell",
-			trackId: 10,
-			measure: 0,
-			column: 1,
-			stringIndex: 0,
-			value: "2",
-		});
-		const looped = songReducer(seeded, { type: "set-track-loop", trackId: 10, sectionId: 1, unit: 1 });
-		expect(looped.tracks[0].loops).toEqual({ 1: 1 });
-		for (let measure = 1; measure < 4; measure++) expect(looped.tracks[0].measures[measure][1][0]).toBe("2");
+describe("progression", () => {
+	it("load-song seeds one step per section, in timeline order", () => {
+		const state = stateOf(twoSectionSong());
+		expect(state.progression.map((entry) => entry.sectionId)).toEqual([1, 2]);
+		expect(state.progression.every((entry) => entry.repeat === 1)).toBe(true);
 	});
 
-	it("rejects a unit as large as the span", () => {
+	it("keeps an explicit progression, dropping steps for sections that are gone", () => {
+		const state = stateOf(
+			buildSong({
+				progression: [
+					{ id: 90, sectionId: 1, repeat: 3 },
+					{ id: 91, sectionId: 404, repeat: 2 },
+				],
+			}),
+		);
+		expect(state.progression).toEqual([{ id: 90, sectionId: 1, repeat: 3 }]);
+	});
+
+	it("set-entry-repeat clamps to at least one play", () => {
 		const state = stateOf(buildSong());
-		expect(songReducer(state, { type: "set-track-loop", trackId: 10, sectionId: 1, unit: 4 })).toBe(state);
+		const entryId = state.progression[0].id;
+		expect(songReducer(state, { type: "set-entry-repeat", entryId, repeat: 4 }).progression[0].repeat).toBe(4);
+		expect(songReducer(state, { type: "set-entry-repeat", entryId, repeat: 0 }).progression[0].repeat).toBe(1);
 	});
 
-	it("a cell edit inside the loop repeats across the unit", () => {
-		const looped = songReducer(stateOf(buildSong()), {
-			type: "set-track-loop",
-			trackId: 10,
-			sectionId: 1,
-			unit: 2,
-		});
-		const next = songReducer(looped, {
-			type: "set-cell",
-			trackId: 10,
-			measure: 1,
-			column: 0,
-			stringIndex: 0,
-			value: "4",
-		});
-		expect(next.tracks[0].measures[3][0][0]).toBe("4");
-		expect(next.tracks[0].measures[0][0][0]).toBeNull();
+	it("add-entry replays an existing section without copying bars", () => {
+		const state = stateOf(buildSong());
+		const next = songReducer(state, { type: "add-entry", sectionId: 1 });
+		expect(next.progression).toHaveLength(2);
+		expect(next.measureCount).toBe(4);
+		expect(next.tracks[0].measures).toHaveLength(4);
 	});
 
-	it("clearing the loop keeps the written-out bars", () => {
-		const seeded = songReducer(stateOf(buildSong()), {
-			type: "set-cell",
-			trackId: 10,
-			measure: 0,
-			column: 0,
-			stringIndex: 0,
-			value: "1",
-		});
-		const looped = songReducer(seeded, { type: "set-track-loop", trackId: 10, sectionId: 1, unit: 1 });
-		const cleared = songReducer(looped, { type: "set-track-loop", trackId: 10, sectionId: 1, unit: null });
-		expect(cleared.tracks[0].loops?.[1]).toBeUndefined();
-		expect(cleared.tracks[0].measures[3][0][0]).toBe("1");
+	it("move-entry reorders and refuses to walk off either end", () => {
+		const state = stateOf(twoSectionSong());
+		const [first, second] = state.progression;
+		const moved = songReducer(state, { type: "move-entry", entryId: first.id, direction: 1 });
+		expect(moved.progression.map((entry) => entry.sectionId)).toEqual([2, 1]);
+		expect(songReducer(state, { type: "move-entry", entryId: first.id, direction: -1 })).toBe(state);
+		expect(songReducer(state, { type: "move-entry", entryId: second.id, direction: 1 })).toBe(state);
+	});
+
+	it("remove-entry keeps the last step", () => {
+		const state = stateOf(twoSectionSong());
+		const next = songReducer(state, { type: "remove-entry", entryId: state.progression[0].id });
+		expect(next.progression).toHaveLength(1);
+		expect(songReducer(next, { type: "remove-entry", entryId: next.progression[0].id })).toBe(next);
+	});
+
+	it("a new section joins the arrangement where it sits on the timeline", () => {
+		const state = stateOf(twoSectionSong());
+		const next = songReducer(state, { type: "add-section-at", measure: 1 });
+		const added = next.sections.find((section) => section.startMeasure === 1);
+		expect(next.progression.map((entry) => entry.sectionId)).toEqual([1, added?.id, 2]);
+	});
+
+	it("delete-section drops the steps that played it", () => {
+		const state = stateOf(twoSectionSong());
+		const next = songReducer(state, { type: "delete-section", id: 2 });
+		expect(next.progression.map((entry) => entry.sectionId)).toEqual([1]);
 	});
 });
 
@@ -246,19 +255,33 @@ describe("measure timeline", () => {
 		expect(next.sections[0].startMeasure).toBe(0);
 	});
 
-	it("delete-measure drops a loop whose unit no longer fits the span", () => {
-		const looped = songReducer(stateOf(buildSong()), {
-			type: "set-track-loop",
-			trackId: 10,
-			sectionId: 1,
-			unit: 3,
-		});
-		const next = songReducer(looped, { type: "delete-measure", measure: 3 });
-		expect(next.tracks[0].loops?.[1]).toBeUndefined();
+	it("delete-measure drops arrangement steps for a collapsed section", () => {
+		const state = stateOf(
+			buildSong({
+				measureCount: 2,
+				tracks: [buildTrack(10, 2)],
+				sections: [
+					{ id: 1, name: "A", startMeasure: 0 },
+					{ id: 2, name: "B", startMeasure: 1 },
+				],
+			}),
+		);
+		const next = songReducer(state, { type: "delete-measure", measure: 0 });
+		expect(next.progression.map((entry) => entry.sectionId)).toEqual([next.sections[0].id]);
 	});
 });
 
 describe("sections", () => {
+	it("set-section-bpm sets, clears, and rejects junk", () => {
+		const state = stateOf(twoSectionSong());
+		const set = songReducer(state, { type: "set-section-bpm", id: 2, bpm: 92 });
+		expect(set.sections[1].bpm).toBe(92);
+		const cleared = songReducer(set, { type: "set-section-bpm", id: 2, bpm: null });
+		expect(cleared.sections[1].bpm).toBeUndefined();
+		expect(songReducer(state, { type: "set-section-bpm", id: 2, bpm: NaN })).toBe(state);
+		expect(songReducer(state, { type: "set-section-bpm", id: 404, bpm: 92 })).toBe(state);
+	});
+
 	it("add-section-at appends a marker inside the timeline", () => {
 		const next = songReducer(stateOf(buildSong()), { type: "add-section-at", measure: 2 });
 		expect(next.sections).toHaveLength(2);
@@ -271,15 +294,36 @@ describe("sections", () => {
 		expect(next.sections).toHaveLength(2);
 	});
 
-	it("delete-section clears dangling linkTo and loops", () => {
+	it("set-lead-in stores clamped bars without touching measures or sections", () => {
+		const next = songReducer(stateOf(buildSong()), { type: "set-lead-in", bars: 3 });
+		expect(next.leadInBars).toBe(3);
+		expect(next.measureCount).toBe(4);
+		expect(next.sections).toHaveLength(1);
+		expect(songReducer(next, { type: "set-lead-in", bars: -2 }).leadInBars).toBe(0);
+		expect(songReducer(next, { type: "set-lead-in", bars: 99 }).leadInBars).toBe(64);
+	});
+
+	it("set-lead-in is a no-op at the same value", () => {
+		const state = songReducer(stateOf(buildSong()), { type: "set-lead-in", bars: 2 });
+		expect(songReducer(state, { type: "set-lead-in", bars: 2 })).toBe(state);
+	});
+
+	it("delete-section takes the section's bars with it and clears dangling linkTo", () => {
 		let state = stateOf(twoSectionSong());
 		state = songReducer(state, { type: "link-section", id: 2, to: 1 });
-		state = songReducer(state, { type: "set-track-loop", trackId: 10, sectionId: 1, unit: 1 });
+		state = songReducer(state, { type: "set-measure-note", measure: 2, text: "keep" });
 		const next = songReducer(state, { type: "delete-section", id: 1 });
 		expect(next.sections).toHaveLength(1);
+		expect(next.measureCount).toBe(2);
+		expect(next.tracks[0].measures).toHaveLength(2);
+		expect(next.measureNotes).toEqual(["keep", ""]);
 		expect(next.sections[0].linkTo).toBeUndefined();
 		expect(next.sections[0].startMeasure).toBe(0);
-		expect(next.tracks[0].loops?.[1]).toBeUndefined();
+	});
+
+	it("delete-section refuses to remove the only section", () => {
+		const state = stateOf(buildSong());
+		expect(songReducer(state, { type: "delete-section", id: 1 })).toBe(state);
 	});
 });
 

@@ -1,5 +1,6 @@
-import type { Measure, Section, Song, Track } from "../types";
-import { makeMeasure } from "./instruments";
+import type { ProgressionEntry, Section, Song, Track } from "../types";
+import { advanceIdCounter, makeMeasure, nextId } from "./instruments";
+import { normalizeProgression } from "./progression";
 import { sectionRangesFor } from "./songOps";
 import { compressText, decompressText, isCompressedExport } from "./lzw";
 
@@ -77,6 +78,12 @@ export async function saveSong(song: Song): Promise<void> {
 	localStorage.setItem(LAST_OPENED_KEY, song.id);
 }
 
+/** Cheap key-only existence check — never deserializes song payloads. */
+export async function hasSong(id: string): Promise<boolean> {
+	const db = await openDb();
+	return (await request(db.transaction(STORE).objectStore(STORE).count(id))) > 0;
+}
+
 export async function deleteSong(id: string): Promise<void> {
 	const db = await openDb();
 	const tx = db.transaction(STORE, "readwrite");
@@ -127,12 +134,18 @@ export async function moveSong(id: string, dir: -1 | 1): Promise<void> {
 	writeOrder(ids);
 }
 
-// Section.linkTo and Track.loops are live, reducer-driven features now.
-// Only the old global per-section `repeat` has no live equivalent; migrateSong
-// rewrites it into written-out bars (plus an equivalent per-track loop) once, on load.
+// Section.linkTo is a live, reducer-driven feature. Two older repeat shapes
+// are folded into today's progression on load: the global per-section
+// `repeat`, and the per-track `loops` unit (whose bars were already written
+// out, so only the bookkeeping field is dropped).
 interface LegacySection extends Section {
 	/** global per-section repeat, replayed for every track */
 	repeat?: number;
+}
+
+interface LegacyTrackLoops extends Track {
+	/** sectionId → bars the track looped inside that section; bars were materialized */
+	loops?: Record<number, number>;
 }
 
 // Short-lived historical track-audio shapes, kept loadable forever:
@@ -158,61 +171,38 @@ function migrateLegacyTrackAudio(song: Song): Song {
 	};
 }
 
-// Legacy global `repeat` becomes written-out measures plus an equivalent
-// per-track loop (same live field the reducer maintains going forward).
+// Both legacy repeat shapes collapse into the progression, which is exactly
+// what they were trying to express: the global per-section `repeat` becomes
+// that section's play count, and the per-track `loops` field is dropped (its
+// repeated bars were already written out as real content, so nothing is lost).
 function migrateLegacyRepeat(song: Song): Song {
 	const legacySections = song.sections as LegacySection[];
-	if (!legacySections.some((s) => (s.repeat ?? 1) > 1)) return song;
-	const sorted = [...legacySections].sort((a, b) => a.startMeasure - b.startMeasure);
-	const tracks = song.tracks.map((t) => ({
-		...t,
-		loops: { ...(t.loops ?? {}) },
-		measures: t.measures.slice(),
-	}));
-	const sections: LegacySection[] = [];
-	let measureCount = song.measureCount;
-	let offset = 0;
-	sorted.forEach((sec, i) => {
-		const start = sec.startMeasure + offset;
-		const end = (sorted[i + 1]?.startMeasure ?? song.measureCount) - 1 + offset;
-		const len = end - start + 1;
-		const repeat = Math.max(1, sec.repeat ?? 1);
-		const { repeat: _repeat, ...rest } = sec;
-		sections.push({ ...rest, startMeasure: start });
-		if (repeat > 1 && len > 0) {
-			tracks.forEach((t) => {
-				const block = t.measures.slice(start, end + 1);
-				const copies: Measure[] = [];
-				for (let r = 1; r < repeat; r++)
-					copies.push(...block.map((measure) => measure.map((col) => col.slice())));
-				t.measures.splice(end + 1, 0, ...copies);
-				t.loops[sec.id] = len;
-			});
-			offset += len * (repeat - 1);
-			measureCount += len * (repeat - 1);
-		}
-	});
-	return { ...song, sections, tracks, measureCount };
+	const legacyTracks = song.tracks as LegacyTrackLoops[];
+	const hasRepeat = legacySections.some((s) => (s.repeat ?? 1) > 1);
+	const hasLoops = legacyTracks.some((t) => t.loops);
+	if (!hasRepeat && !hasLoops) return song;
+	const sections = legacySections.map(({ repeat: _repeat, ...rest }) => rest);
+	const tracks = legacyTracks.map(({ loops: _loops, ...rest }) => rest);
+	const repeatOf = new Map(legacySections.map((s) => [s.id, Math.max(1, Math.floor(s.repeat ?? 1))]));
+	const progression: ProgressionEntry[] | undefined = song.progression
+		? song.progression
+		: hasRepeat
+			? [...sections]
+					.sort((a, b) => a.startMeasure - b.startMeasure)
+					.map((section) => ({ id: nextId(), sectionId: section.id, repeat: repeatOf.get(section.id) ?? 1 }))
+			: undefined;
+	return { ...song, sections, tracks, progression };
 }
 
-// linkTo and loops are live fields the reducer keeps in sync as the user
-// edits — this just self-heals on load in case saved data ever drifted, and
-// keeps both fields (nothing is stripped).
+// linkTo is a live field the reducer keeps in sync as the user edits — this
+// just self-heals it on load in case saved data ever drifted (nothing is
+// stripped), and materializes the progression so every loaded song has one.
 function resyncLiveFeatures(song: Song): Song {
 	const ranges = sectionRangesFor(song.sections, song.measureCount);
-	const tracks: Track[] = song.tracks.map((t) => {
-		const measures = t.measures.map((measure) => measure.map((col) => col.slice()));
-		ranges.forEach((r) => {
-			const span = r.endMeasure - r.startMeasure + 1;
-			const unit = t.loops?.[r.id] ?? 0;
-			if (unit < 1 || unit >= span) return;
-			for (let off = unit; off < span; off++) {
-				const from = measures[r.startMeasure + (off % unit)];
-				measures[r.startMeasure + off] = from ? from.map((col) => col.slice()) : makeMeasure(t.tuning.length);
-			}
-		});
-		return { ...t, measures };
-	});
+	const tracks: Track[] = song.tracks.map((t) => ({
+		...t,
+		measures: t.measures.map((measure) => measure.map((col) => col.slice())),
+	}));
 	ranges.forEach((r) => {
 		if (r.linkTo == null) return;
 		const src = ranges.find((x) => x.id === r.linkTo);
@@ -226,10 +216,21 @@ function resyncLiveFeatures(song: Song): Song {
 			}
 		});
 	});
-	return { ...song, tracks };
+	return { ...song, tracks, progression: normalizeProgression(song.progression, song.sections) };
 }
 
+// Entry ids come from the shared id counter, so it is advanced past every id
+// the stored song already uses before any new one is minted.
 export function migrateSong(song: Song): Song {
+	advanceIdCounter(
+		Math.max(
+			0,
+			...song.sections.map((section) => section.id),
+			...song.tracks.map((track) => track.id),
+			...(song.stems ?? []).map((stem) => stem.id),
+			...(song.progression ?? []).map((entry) => entry.id),
+		),
+	);
 	return resyncLiveFeatures(migrateLegacyRepeat(migrateLegacyTrackAudio(song)));
 }
 

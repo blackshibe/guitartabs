@@ -34,6 +34,17 @@ function formatVideoTime(totalSeconds: number): string {
 	return `${minutes}:${seconds.toFixed(3).padStart(6, "0")}`;
 }
 
+// Sliders hold a 0–100 position; the applied gain follows a cubic taper so
+// the travel feels logarithmic — linear amplitude puts all the audible change
+// in the top fifth of the track.
+function sliderToGain(position: number): number {
+	return (position / 100) ** 3;
+}
+
+function gainToSlider(gain: number): number {
+	return Math.round(Math.cbrt(gain) * 100);
+}
+
 function readStoredVolume(key: string): number {
 	const raw = localStorage.getItem(key);
 	const value = raw == null ? NaN : Number(raw);
@@ -81,18 +92,17 @@ const YoutubeSyncPanel = forwardRef<YoutubeSyncHandle, Props>(function YoutubeSy
 	const applyVideoVolume = (value: number) => {
 		setVideoVolume(value);
 		localStorage.setItem(VIDEO_VOLUME_KEY, String(value));
-		playerRef.current?.setVolume(value);
+		playerRef.current?.setVolume(sliderToGain(value) * 100);
 	};
 
 	const applyMasterVolume = (value: number) => {
 		setMasterVolumeState(value);
 		localStorage.setItem(MASTER_VOLUME_KEY, String(value));
-		setMasterVolume(value / 100);
+		setMasterVolume(sliderToGain(value));
 	};
 
-	// Apply the persisted master level once on mount.
 	useEffect(() => {
-		setMasterVolume(readStoredVolume(MASTER_VOLUME_KEY) / 100);
+		setMasterVolume(sliderToGain(readStoredVolume(MASTER_VOLUME_KEY)));
 	}, []);
 
 	useEffect(() => {
@@ -111,7 +121,7 @@ const YoutubeSyncPanel = forwardRef<YoutubeSyncHandle, Props>(function YoutubeSy
 				playerVars: { playsinline: 1 },
 				events: {
 					onReady: () => {
-						playerRef.current?.setVolume(videoVolumeRef.current);
+						playerRef.current?.setVolume(sliderToGain(videoVolumeRef.current) * 100);
 						setReady(true);
 					},
 				},
@@ -290,10 +300,10 @@ const YoutubeSyncPanel = forwardRef<YoutubeSyncHandle, Props>(function YoutubeSy
 									type="range"
 									min={0}
 									max={100}
-									value={Math.round((t.volume ?? 1) * 100)}
-									title={`Volume ${Math.round((t.volume ?? 1) * 100)}`}
+									value={gainToSlider(t.volume ?? 1)}
+									title={`Volume ${gainToSlider(t.volume ?? 1)}`}
 									className="w-24 accent-accent shrink-0"
-									onChange={(e) => onSetTrackVolume(t.id, Number(e.target.value) / 100)}
+									onChange={(e) => onSetTrackVolume(t.id, sliderToGain(Number(e.target.value)))}
 								/>
 							</div>
 						))}
@@ -309,10 +319,10 @@ const YoutubeSyncPanel = forwardRef<YoutubeSyncHandle, Props>(function YoutubeSy
 									type="range"
 									min={0}
 									max={100}
-									value={Math.round((s.volume ?? 1) * 100)}
-									title={`Volume ${Math.round((s.volume ?? 1) * 100)}`}
+									value={gainToSlider(s.volume ?? 1)}
+									title={`Volume ${gainToSlider(s.volume ?? 1)}`}
 									className="w-24 accent-accent shrink-0"
-									onChange={(e) => onSetStemVolume(s.id, Number(e.target.value) / 100)}
+									onChange={(e) => onSetStemVolume(s.id, sliderToGain(Number(e.target.value)))}
 								/>
 								<button
 									className="text-ink-soft hover:text-accent px-1"

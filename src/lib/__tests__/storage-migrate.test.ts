@@ -63,7 +63,7 @@ describe("legacy migrations", () => {
 		expect(migrated.tracks[0].backing?.name).toBe("new.mp3");
 	});
 
-	it("writes out the legacy global section repeat as real bars plus a loop", () => {
+	it("turns the legacy global section repeat into a progression play count", () => {
 		const track = buildTrack(10, 2);
 		poke(track, 0, 0, 0, "5");
 		poke(track, 1, 0, 0, "6");
@@ -73,10 +73,8 @@ describe("legacy migrations", () => {
 			sections: [{ id: 1, name: "A", startMeasure: 0, repeat: 2 } as Song["sections"][number]],
 		});
 		const migrated = migrateSong(legacy);
-		expect(migrated.measureCount).toBe(4);
-		expect(migrated.tracks[0].measures[2][0][0]).toBe("5");
-		expect(migrated.tracks[0].measures[3][0][0]).toBe("6");
-		expect(migrated.tracks[0].loops).toEqual({ 1: 2 });
+		expect(migrated.progression).toEqual([{ id: expect.any(Number), sectionId: 1, repeat: 2 }]);
+		expect(migrated.measureCount).toBe(2); // no bars written out — the arrangement says it twice
 		expect("repeat" in migrated.sections[0]).toBe(false);
 	});
 
@@ -96,14 +94,21 @@ describe("legacy migrations", () => {
 		expect(migrated.sections[1].linkTo).toBe(1); // link kept, not stripped
 	});
 
-	it("re-mirrors drifted loop bars on load", () => {
-		const track = buildTrack(10, 4);
+	it("drops the legacy per-track loop field, keeping its written-out bars", () => {
+		const track = buildTrack(10, 4) as Track & { loops?: Record<number, number> };
 		track.loops = { 1: 1 };
 		poke(track, 0, 0, 0, "5");
-		poke(track, 3, 0, 0, "8"); // drifted bar
+		poke(track, 3, 0, 0, "8");
 		const migrated = migrateSong(buildSong({ tracks: [track] }));
-		for (let measure = 1; measure < 4; measure++) expect(migrated.tracks[0].measures[measure][0][0]).toBe("5");
-		expect(migrated.tracks[0].loops).toEqual({ 1: 1 }); // loop kept
+		expect("loops" in migrated.tracks[0]).toBe(false);
+		expect(migrated.tracks[0].measures[0][0][0]).toBe("5");
+		expect(migrated.tracks[0].measures[3][0][0]).toBe("8"); // real content, left alone
+	});
+
+	it("gives every loaded song a progression", () => {
+		const migrated = migrateSong(buildSong());
+		expect(migrated.progression).toHaveLength(1);
+		expect(migrated.progression?.[0].sectionId).toBe(1);
 	});
 
 	it("passes an already-modern song through untouched in content", () => {

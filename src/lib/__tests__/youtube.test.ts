@@ -30,9 +30,10 @@ describe("videoSecondsForCol", () => {
 		expect(videoSecondsForCol(anchor, 120, 8, 20)).toBeCloseTo(31);
 	});
 
-	it("walks backwards before the anchor but clamps at zero", () => {
+	it("walks backwards before the anchor, going negative when the tab starts before the video", () => {
 		expect(videoSecondsForCol(anchor, 120, 8, 12)).toBeCloseTo(29);
 		expect(videoSecondsForCol({ anchorMeasure: 0, anchorSeconds: 1 }, 120, 8, 100)).toBeGreaterThan(0);
-		expect(videoSecondsForCol({ anchorMeasure: 10, anchorSeconds: 0 }, 120, 8, 0)).toBe(0);
+		// Playback holds the video and starts it when the clock reaches 0:00.
+		expect(videoSecondsForCol({ anchorMeasure: 10, anchorSeconds: 0 }, 120, 8, 0)).toBe(-20);
 	});
 });

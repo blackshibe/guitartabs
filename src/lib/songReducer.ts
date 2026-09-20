@@ -1,5 +1,6 @@
 import type {
 	CellPos,
+	ProgressionEntry,
 	Section,
 	SectionRange,
 	Song,
@@ -11,6 +12,7 @@ import type {
 } from "../types";
 import { COLS_PER_MEASURE, makeMeasures, nextId } from "./instruments";
 import type { CellClipboard, Rect, SectionClipboard } from "./clipboard";
+import { entryIndexForSection, normalizeProgression } from "./progression";
 import {
 	dedupeSections,
 	deepCopyMeasures,
@@ -26,9 +28,13 @@ export interface SongState {
 	bpm: number;
 	measureCount: number;
 	sections: Section[];
+	/** the arrangement: which sections play, in what order, how many times */
+	progression: ProgressionEntry[];
 	tracks: Track[];
 	/** measureNotes[m] — free-text annotation for that measure; parallel to the shared timeline, not per-track */
 	measureNotes: string[];
+	/** bars of silence before the tab comes in; absent = 0 */
+	leadInBars?: number;
 	youtube?: YoutubeSync;
 	/** song-level audio layers, not tied to any tab track */
 	stems: SongStem[];
@@ -39,6 +45,7 @@ export interface SongState {
 export type SongAction =
 	| { type: "set-title"; title: string }
 	| { type: "set-bpm"; bpm: number }
+	| { type: "set-section-bpm"; id: number; bpm: number | null }
 	| { type: "set-cell"; trackId: number; measure: number; column: number; stringIndex: number; value: string | null }
 	| { type: "clear-range"; trackId: number; rect: Rect }
 	| { type: "paste-cells"; trackId: number; at: CellPos; clip: CellClipboard }
@@ -47,14 +54,18 @@ export type SongAction =
 	| { type: "delete-measure"; measure: number }
 	| { type: "add-section-at"; measure: number }
 	| { type: "add-section-after"; measure: number }
+	| { type: "set-lead-in"; bars: number }
 	| { type: "rename-section"; id: number; name: string }
 	| { type: "set-section-comment"; id: number; trackId?: number; text: string }
 	| { type: "delete-section"; id: number }
 	| { type: "paste-section"; at: number; clip: SectionClipboard }
 	| { type: "link-section"; id: number; to: number }
 	| { type: "unlink-section"; id: number }
-	| { type: "set-track-loop"; trackId: number; sectionId: number; unit: number | null }
 	| { type: "set-section-color"; id: number; colorIndex?: number }
+	| { type: "add-entry"; sectionId: number; at?: number }
+	| { type: "remove-entry"; entryId: number }
+	| { type: "move-entry"; entryId: number; direction: -1 | 1 }
+	| { type: "set-entry-repeat"; entryId: number; repeat: number }
 	| { type: "add-track"; track: Track }
 	| { type: "remove-track"; id: number }
 	| { type: "rename-track"; id: number; name: string }
@@ -90,45 +101,15 @@ function mirrorMeasures(ranges: SectionRange[], m: number): number[] {
 	const group = ranges.filter((r) => rootIdOf(r) === root);
 	if (group.length <= 1) return [m];
 	const off = m - sec.startMeasure;
-	return [m, ...group.filter((r) => r.id !== sec.id).map((r) => r.startMeasure + off)];
-}
-
-// This one track's own repeat positions inside its loop unit for whichever
-// section m sits in. Singleton unless the track loops that section.
-function trackLoopMirror(track: Track, ranges: SectionRange[], m: number): number[] {
-	const sec = ranges.find((r) => m >= r.startMeasure && m <= r.endMeasure);
-	if (!sec) return [m];
-	const span = sec.endMeasure - sec.startMeasure + 1;
-	const unit = track.loops?.[sec.id];
-	if (!unit || unit < 1 || unit >= span) return [m];
-	const off = (m - sec.startMeasure) % unit;
-	const mirrors: number[] = [];
-	for (let o = off; o < span; o += unit) mirrors.push(sec.startMeasure + o);
-	return mirrors;
-}
-
-// Closure over both mirror sources: an edit at m may fan out across a linked
-// section (all tracks) and/or this track's own loop unit (that track only),
-// and either can chain into the other, so this expands until stable.
-function resolveMirrorSet(ranges: SectionRange[], track: Track, start: number): number[] {
-	const seen = new Set<number>([start]);
-	const stack = [start];
-	while (stack.length) {
-		const m = stack.pop() as number;
-		for (const p of mirrorMeasures(ranges, m)) {
-			if (!seen.has(p)) {
-				seen.add(p);
-				stack.push(p);
-			}
-		}
-		for (const p of trackLoopMirror(track, ranges, m)) {
-			if (!seen.has(p)) {
-				seen.add(p);
-				stack.push(p);
-			}
-		}
-	}
-	return [...seen];
+	// Structural edits can leave group members with unequal spans; a mirror
+	// write past a shorter member's end would land in the next section's bars
+	// (or off the timeline entirely), so those members are skipped.
+	return [
+		m,
+		...group
+			.filter((r) => r.id !== sec.id && r.startMeasure + off <= r.endMeasure)
+			.map((r) => r.startMeasure + off),
+	];
 }
 
 function spliceNotes(notes: string[], at: number, insert: string[]): string[] {
@@ -167,6 +148,24 @@ function fitMeasuresTo(track: Track, measures: (string | null)[][][], span: numb
 	return fitted;
 }
 
+// A new section joins the arrangement immediately, right after whatever
+// already plays the section before it on the timeline — otherwise it would be
+// invisible, since the grid renders the progression, not the raw timeline.
+function withNewSectionEntry(
+	progression: ProgressionEntry[],
+	sections: Section[],
+	sectionId: number,
+	startMeasure: number,
+): ProgressionEntry[] {
+	const next = progression.slice();
+	next.splice(entryIndexForSection(progression, sections, startMeasure), 0, {
+		id: nextId(),
+		sectionId,
+		repeat: 1,
+	});
+	return next;
+}
+
 // Insert a copied/duplicated section block at timeline position `at`.
 function insertSectionBlock(
 	state: SongState,
@@ -176,15 +175,18 @@ function insertSectionBlock(
 	notes: string[] | undefined,
 	trackContent: (t: Track, index: number) => Track["measures"],
 ): SongState {
+	const id = nextId();
+	const sections = [
+		...state.sections.map((s) => (s.startMeasure >= at ? { ...s, startMeasure: s.startMeasure + span } : s)),
+		{ id, startMeasure: at, ...marker },
+	];
 	return {
 		...state,
 		tracks: state.tracks.map((t, i) => insertMeasuresIntoTrack(t, at, trackContent(t, i))),
 		measureCount: state.measureCount + span,
 		measureNotes: spliceNotes(state.measureNotes, at, notes ?? Array(span).fill("")),
-		sections: [
-			...state.sections.map((s) => (s.startMeasure >= at ? { ...s, startMeasure: s.startMeasure + span } : s)),
-			{ id: nextId(), startMeasure: at, ...marker },
-		],
+		sections,
+		progression: withNewSectionEntry(state.progression, sections, id, at),
 	};
 }
 
@@ -196,11 +198,21 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 		case "set-bpm":
 			return state.bpm === action.bpm ? state : { ...state, bpm: action.bpm };
 
+		case "set-section-bpm": {
+			const bpm = action.bpm !== null && Number.isFinite(action.bpm) && action.bpm >= 1 ? action.bpm : undefined;
+			const section = state.sections.find((s) => s.id === action.id);
+			if (!section || section.bpm === bpm) return state;
+			return {
+				...state,
+				sections: state.sections.map((s) => (s.id === action.id ? { ...s, bpm } : s)),
+			};
+		}
+
 		case "set-cell": {
 			const { trackId, measure: m, column: c, stringIndex: s, value } = action;
 			const track = state.tracks.find((t) => t.id === trackId);
 			if (!track || m < 0 || m >= state.measureCount || s < 0 || s >= track.tuning.length) return state;
-			const positions = resolveMirrorSet(rangesOf(state), track, m);
+			const positions = mirrorMeasures(rangesOf(state), m);
 			return updateTrack(state, trackId, (t) => {
 				const measures = deepCopyMeasures(t.measures);
 				positions.forEach((p) => {
@@ -222,7 +234,7 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 					const m = Math.floor(g / COLS_PER_MEASURE);
 					const c = g % COLS_PER_MEASURE;
 					if (m < 0 || m >= state.measureCount) continue;
-					resolveMirrorSet(ranges, t, m).forEach((p) => {
+					mirrorMeasures(ranges, m).forEach((p) => {
 						for (let s = rect.startString; s <= endString; s++) measures[p][c][s] = null;
 					});
 				}
@@ -244,7 +256,7 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 					if (g > maxCol) break;
 					const m = Math.floor(g / COLS_PER_MEASURE);
 					const c = g % COLS_PER_MEASURE;
-					resolveMirrorSet(ranges, t, m).forEach((p) => {
+					mirrorMeasures(ranges, m).forEach((p) => {
 						for (let r = 0; r < clip.rows; r++) {
 							const s = at.stringIndex + r;
 							if (s >= t.tuning.length) break;
@@ -282,28 +294,19 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 				.map((s) => (s.startMeasure >= newCount ? { ...s, startMeasure: newCount - 1 } : s));
 			const deduped = dedupeSections(shifted).sort((a, b) => a.startMeasure - b.startMeasure);
 			if (deduped[0].startMeasure !== 0) deduped[0] = { ...deduped[0], startMeasure: 0 };
-			const newRanges = sectionRangesFor(deduped, newCount);
+			// dedupeSections may have dropped a section other members linked to.
+			const surviving = new Set(deduped.map((s) => s.id));
+			const cleaned = deduped.map((s) =>
+				s.linkTo !== undefined && !surviving.has(s.linkTo) ? { ...s, linkTo: undefined } : s,
+			);
 			return {
 				...state,
-				tracks: state.tracks.map((t) => {
-					const track = deleteMeasuresFromTrack(t, new Set([m]));
-					if (!track.loops) return track;
-					const loops = { ...track.loops };
-					let changed = false;
-					for (const key of Object.keys(loops)) {
-						const sectionId = Number(key);
-						const range = newRanges.find((r) => r.id === sectionId);
-						const span = range ? range.endMeasure - range.startMeasure + 1 : 0;
-						if (!range || loops[sectionId] >= span) {
-							delete loops[sectionId];
-							changed = true;
-						}
-					}
-					return changed ? { ...track, loops } : track;
-				}),
+				tracks: state.tracks.map((t) => deleteMeasuresFromTrack(t, new Set([m]))),
 				measureCount: newCount,
 				measureNotes: state.measureNotes.filter((_, i) => i !== m),
-				sections: deduped,
+				sections: cleaned,
+				// A collapsed duplicate section takes its arrangement steps with it.
+				progression: normalizeProgression(state.progression, cleaned),
 			};
 		}
 
@@ -311,9 +314,11 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 			const { measure: m } = action;
 			if (m < 0 || m >= state.measureCount) return state;
 			if (state.sections.some((s) => s.startMeasure === m)) return state;
+			const id = nextId();
 			return {
 				...state,
-				sections: [...state.sections, { id: nextId(), name: "New Section", startMeasure: m, comment: "" }],
+				sections: [...state.sections, { id, name: "New Section", startMeasure: m, comment: "" }],
+				progression: withNewSectionEntry(state.progression, state.sections, id, m),
 			};
 		}
 
@@ -322,12 +327,19 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 			const collision = state.sections.some((s) => s.startMeasure === m);
 			if (m >= state.measureCount || collision) {
 				const grown = insertBlankAt(state, m, 1);
+				const id = nextId();
 				return {
 					...grown,
-					sections: [...grown.sections, { id: nextId(), name: "New Section", startMeasure: m, comment: "" }],
+					sections: [...grown.sections, { id, name: "New Section", startMeasure: m, comment: "" }],
+					progression: withNewSectionEntry(grown.progression, grown.sections, id, m),
 				};
 			}
 			return songReducer(state, { type: "add-section-at", measure: m });
+		}
+
+		case "set-lead-in": {
+			const bars = Math.max(0, Math.min(64, action.bars));
+			return (state.leadInBars ?? 0) === bars ? state : { ...state, leadInBars: bars };
 		}
 
 		case "rename-section":
@@ -348,20 +360,30 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 			};
 		}
 
+		// Deletes the section AND its bars. There is no marker-only removal: a
+		// bare marker delete just merged the bars into the section above, which
+		// is never what "delete this part of the song" means.
 		case "delete-section": {
-			if (state.sections.length <= 1 || !state.sections.some((s) => s.id === action.id)) return state;
+			const range = rangesOf(state).find((r) => r.id === action.id);
+			if (!range || state.sections.length <= 1) return state;
+			const span = range.endMeasure - range.startMeasure + 1;
+			if (state.measureCount - span < 1) return state;
+			const drop = new Set<number>();
+			for (let m = range.startMeasure; m <= range.endMeasure; m++) drop.add(m);
 			const next = state.sections
 				.filter((s) => s.id !== action.id)
 				.map((s) => (s.linkTo === action.id ? { ...s, linkTo: undefined } : s))
+				.map((s) => (s.startMeasure > range.endMeasure ? { ...s, startMeasure: s.startMeasure - span } : s))
 				.sort((a, b) => a.startMeasure - b.startMeasure);
 			if (next[0].startMeasure !== 0) next[0] = { ...next[0], startMeasure: 0 };
-			const tracks = state.tracks.map((t) => {
-				if (!t.loops || !(action.id in t.loops)) return t;
-				const loops = { ...t.loops };
-				delete loops[action.id];
-				return { ...t, loops };
-			});
-			return { ...state, sections: next, tracks };
+			return {
+				...state,
+				tracks: state.tracks.map((t) => deleteMeasuresFromTrack(t, drop)),
+				measureCount: state.measureCount - span,
+				measureNotes: state.measureNotes.filter((_, i) => !drop.has(i)),
+				sections: next,
+				progression: normalizeProgression(state.progression, next),
+			};
 		}
 
 		case "link-section": {
@@ -404,31 +426,38 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 			return { ...state, sections: state.sections.map((s) => (s.id === id ? { ...s, linkTo: undefined } : s)) };
 		}
 
-		case "set-track-loop": {
-			const { trackId, sectionId, unit } = action;
-			const track = state.tracks.find((t) => t.id === trackId);
-			if (!track) return state;
-			const range = rangesOf(state).find((r) => r.id === sectionId);
-			if (!range) return state;
-			const span = range.endMeasure - range.startMeasure + 1;
-			if (unit == null) {
-				if (!track.loops || !(sectionId in track.loops)) return state;
-				return updateTrack(state, trackId, (t) => {
-					const loops = { ...t.loops };
-					delete loops[sectionId];
-					return { ...t, loops };
-				});
-			}
-			if (unit < 1 || unit >= span) return state;
-			return updateTrack(state, trackId, (t) => {
-				const measures = deepCopyMeasures(t.measures);
-				for (let off = unit; off < span; off++) {
-					measures[range.startMeasure + off] = measures[range.startMeasure + (off % unit)].map((col) =>
-						col.slice(),
-					);
-				}
-				return { ...t, measures, loops: { ...t.loops, [sectionId]: unit } };
-			});
+		case "add-entry": {
+			if (!state.sections.some((s) => s.id === action.sectionId)) return state;
+			const entry: ProgressionEntry = { id: nextId(), sectionId: action.sectionId, repeat: 1 };
+			const progression = state.progression.slice();
+			progression.splice(action.at ?? progression.length, 0, entry);
+			return { ...state, progression };
+		}
+
+		case "remove-entry": {
+			// The last step can't go — an empty arrangement would render nothing.
+			if (state.progression.length <= 1) return state;
+			if (!state.progression.some((e) => e.id === action.entryId)) return state;
+			return { ...state, progression: state.progression.filter((e) => e.id !== action.entryId) };
+		}
+
+		case "move-entry": {
+			const from = state.progression.findIndex((e) => e.id === action.entryId);
+			const to = from + action.direction;
+			if (from === -1 || to < 0 || to >= state.progression.length) return state;
+			const progression = state.progression.slice();
+			[progression[from], progression[to]] = [progression[to], progression[from]];
+			return { ...state, progression };
+		}
+
+		case "set-entry-repeat": {
+			const repeat = Math.max(1, Math.min(64, Math.floor(action.repeat)));
+			const entry = state.progression.find((e) => e.id === action.entryId);
+			if (!entry || entry.repeat === repeat) return state;
+			return {
+				...state,
+				progression: state.progression.map((e) => (e.id === action.entryId ? { ...e, repeat } : e)),
+			};
 		}
 
 		case "set-section-color":
@@ -542,8 +571,10 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 				bpm: song.bpm,
 				measureCount: song.measureCount,
 				sections: song.sections,
+				progression: normalizeProgression(song.progression, song.sections),
 				tracks: song.tracks,
 				measureNotes: song.measureNotes ?? [],
+				leadInBars: song.leadInBars,
 				youtube: song.youtube,
 				stems: song.stems ?? [],
 				updatedAt: song.updatedAt,
@@ -573,6 +604,8 @@ function coalesceKey(action: SongAction): string | null {
 			return "title";
 		case "set-bpm":
 			return "bpm";
+		case "set-section-bpm":
+			return `sec-bpm:${action.id}`;
 		case "set-cell":
 			return `cell:${action.trackId}:${action.measure}:${action.column}:${action.stringIndex}`;
 		case "set-measure-note":
@@ -587,6 +620,8 @@ function coalesceKey(action: SongAction): string | null {
 			return `track-volume:${action.id}`;
 		case "set-stem-volume":
 			return `stem-volume:${action.id}`;
+		case "set-entry-repeat":
+			return `entry-repeat:${action.entryId}`;
 		default:
 			return null;
 	}

@@ -54,10 +54,14 @@ export function useSongLibrary({ song, applySong, showToast }: UseSongLibraryArg
 		setDirty(true);
 		const timer = setTimeout(async () => {
 			try {
-				const inLibrary = (await storage.listSongs()).some((candidate) => candidate.id === song.id);
-				if (inLibrary) {
-					await storage.saveSong({ ...song, updatedAt: Date.now() });
-					setLibrarySongs(await storage.listSongs());
+				// Never listSongs here — deserializing every song's stem audio on
+				// each autosave froze the browser.
+				if (await storage.hasSong(song.id)) {
+					const stamped = { ...song, updatedAt: Date.now() };
+					await storage.saveSong(stamped);
+					setLibrarySongs((current) =>
+						current.map((candidate) => (candidate.id === stamped.id ? stamped : candidate)),
+					);
 				}
 				setDirty(false);
 			} catch {
@@ -68,13 +72,19 @@ export function useSongLibrary({ song, applySong, showToast }: UseSongLibraryArg
 	}, [song, showToast]);
 
 	const saveCurrentSong = async () => {
+		const stamped = { ...song, updatedAt: Date.now() };
 		try {
-			await storage.saveSong({ ...song, updatedAt: Date.now() });
+			await storage.saveSong(stamped);
 		} catch {
 			showToast("Save failed");
 			return;
 		}
-		setLibrarySongs(await storage.listSongs());
+		// Patch in place — re-reading the library is heavy with stem audio.
+		setLibrarySongs((current) =>
+			current.some((candidate) => candidate.id === stamped.id)
+				? current.map((candidate) => (candidate.id === stamped.id ? stamped : candidate))
+				: [stamped, ...current],
+		);
 		setDirty(false);
 		showToast("Saved");
 	};

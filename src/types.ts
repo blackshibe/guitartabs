@@ -25,8 +25,6 @@ export interface Track {
 	name: string;
 	tuning: StringTuning[];
 	measures: Measure[];
-	/** sectionId → bars this track loops within that section (unit < span); bars unit..span-1 mirror 0..unit-1 */
-	loops?: Record<number, number>;
 	/** playback mix gain 0–1; absent = 1 */
 	volume?: number;
 	/** backing-track audio replacing this track's synth: plays timeline-aligned
@@ -55,10 +53,23 @@ export interface Section {
 	linkTo?: number;
 	/** index into SECTION_COLORS; absent = neutral */
 	colorIndex?: number;
+	/** tempo override while this section plays (to track a reference video
+	 *  whose performance drifts); absent = the song bpm */
+	bpm?: number;
 }
 
 export interface SectionRange extends Section {
 	endMeasure: number;
+}
+
+/** One step of the arrangement: play this section this many times, here.
+ *  The progression — not the section order on the measure timeline — decides
+ *  what the grid renders and what playback walks. */
+export interface ProgressionEntry {
+	id: number;
+	sectionId: number;
+	/** how many consecutive times this module plays; always >= 1 */
+	repeat: number;
 }
 
 export interface YoutubeSync {
@@ -76,10 +87,14 @@ export interface Song {
 	sections: Section[];
 	tracks: Track[];
 	updatedAt: number;
+	/** ordered arrangement over the sections; absent = each section once, timeline order */
+	progression?: ProgressionEntry[];
 	/** song-level audio layers, not tied to any tab track */
 	stems?: SongStem[];
 	/** measureNotes[m] — free-text annotation for that measure, shared across tracks; parallel to measureCount */
 	measureNotes?: string[];
+	/** bars of silence before the tab comes in — pure playback timing, no measures behind it; absent = 0 */
+	leadInBars?: number;
 	youtube?: YoutubeSync;
 }
 
@@ -95,6 +110,9 @@ export interface RangeSelection {
 }
 
 export interface Playhead {
+	/** source-timeline measure being played */
 	measure: number;
 	column: number;
+	/** which rendered progression slot it is being played in */
+	slot: number;
 }
