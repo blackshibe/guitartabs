@@ -1,5 +1,5 @@
-import type { Measure, Section, SectionRange, Track } from "../types";
-import { makeMeasures } from "./instruments";
+import type { Measure, Section, SectionRange, Strum, StrumRow, Track } from "../types";
+import { COLS_PER_MEASURE, makeMeasures } from "./instruments";
 
 export function sectionRangesFor(sections: Section[], measureCount: number): SectionRange[] {
 	const sorted = [...sections].sort((a, b) => a.startMeasure - b.startMeasure);
@@ -22,11 +22,42 @@ export function deepCopyMeasures(measures: Measure[]): Measure[] {
 	return measures.map((measure) => measure.map((col) => col.slice()));
 }
 
-// The only splice sites for a track's timeline.
-export function insertMeasuresIntoTrack(t: Track, at: number, measures: Measure[]): Track {
+export function blankStrumRow(): StrumRow {
+	return Array(COLS_PER_MEASURE).fill(null);
+}
+
+export function strumAt(track: Track, measure: number, column: number): Strum | null {
+	return track.strums?.[measure]?.[column] ?? null;
+}
+
+/** Strum rows for measures [start, end], filled in — for clipboard payloads. */
+export function strumRowsFor(track: Track, start: number, end: number): StrumRow[] {
+	return Array.from({ length: end - start + 1 }, (_, off) =>
+		Array.from({ length: COLS_PER_MEASURE }, (_, c) => strumAt(track, start + off, c)),
+	);
+}
+
+/** Write strum marks; the lazily grown strums array is padded as needed. */
+export function writeStrums(t: Track, writes: { measure: number; column: number; strum: Strum | null }[]): Track {
+	const strums = (t.strums ?? []).map((row) => row.slice());
+	writes.forEach(({ measure, column, strum }) => {
+		while (strums.length <= measure) strums.push(blankStrumRow());
+		strums[measure][column] = strum;
+	});
+	return { ...t, strums };
+}
+
+// The only splice sites for a track's timeline — strum rows move with their
+// measures.
+export function insertMeasuresIntoTrack(t: Track, at: number, measures: Measure[], strumRows?: StrumRow[]): Track {
 	const nextMeasures = t.measures.slice();
 	nextMeasures.splice(at, 0, ...measures);
-	return { ...t, measures: nextMeasures };
+	const marked = strumRows?.some((row) => row.some((strum) => strum !== null)) ?? false;
+	if (!t.strums && !marked) return { ...t, measures: nextMeasures };
+	const strums = (t.strums ?? []).slice();
+	while (strums.length < at) strums.push(blankStrumRow());
+	strums.splice(at, 0, ...measures.map((_, off) => strumRows?.[off]?.slice() ?? blankStrumRow()));
+	return { ...t, measures: nextMeasures, strums };
 }
 
 export function insertBlankMeasures(t: Track, at: number, count: number): Track {
@@ -34,7 +65,9 @@ export function insertBlankMeasures(t: Track, at: number, count: number): Track 
 }
 
 export function deleteMeasuresFromTrack(t: Track, drop: Set<number>): Track {
-	return { ...t, measures: t.measures.filter((_, i) => !drop.has(i)) };
+	const measures = t.measures.filter((_, i) => !drop.has(i));
+	if (!t.strums) return { ...t, measures };
+	return { ...t, measures, strums: t.strums.filter((_, i) => !drop.has(i)) };
 }
 
 function cellEq(a: string | null | undefined, b: string | null | undefined): boolean {

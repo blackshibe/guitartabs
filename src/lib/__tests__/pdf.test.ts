@@ -71,6 +71,22 @@ describe("buildTrackPdf", () => {
 		expect(file).toContain(`(1 / ${pageCount(file)}) Tj`);
 	});
 
+	it("tightens a page to keep a section's closing line on it", () => {
+		// One section, so every line but the last continues it without closing it.
+		const pagesFor = (bars: number) => {
+			const track = buildTrack(10, bars);
+			for (let m = 0; m < bars; m++) poke(track, m, m % 8, 0, String(m % 10));
+			poke(track, 0, 7, 1, "5"); // bar 0 is unique, so the section never folds into a repeat
+			return pageCount(asString(buildTrackPdf(buildSong({ measureCount: bars, tracks: [track] }), 10)));
+		};
+		// With one more line after it, the line ending at `bars` doesn't close the
+		// section, so the first time that breaks marks the first line off the page.
+		let bars = 8;
+		while (pagesFor(bars + 4) === 1) bars += 4;
+		// As the section's closing line, that same line is squeezed in.
+		expect(pagesFor(bars)).toBe(1);
+	});
+
 	it("returns an empty single page for an unknown track id", () => {
 		const file = asString(buildTrackPdf(buildSong(), 999));
 		expect(pageCount(file)).toBe(1);

@@ -4,6 +4,8 @@ import { normalizeRect } from "../lib/clipboard";
 import { cycleRing, toggleHarmonic, typeDigit } from "../lib/cellValue";
 import { locateStep, slotForMeasure, stepOf, type ProgressionSlot } from "../lib/progression";
 import type { SongAction } from "../lib/songReducer";
+import { strumAt } from "../lib/songOps";
+import { addStroke } from "../lib/strum";
 
 interface UseGridEditingArguments {
 	activeTrack: Track | undefined;
@@ -159,9 +161,29 @@ export function useGridEditing({
 			return;
 		}
 
+		// Strum marks sit on the whole column: D / U add a down / up stroke,
+		// so D then U splits the column into two strums.
+		const strumKey = event.key.toLowerCase();
+		if (strumKey === "d" || strumKey === "u") {
+			event.preventDefault();
+			dispatch({
+				type: "set-strum",
+				trackId: activeTrack.id,
+				measure: focus.measure,
+				column: focus.column,
+				strum: addStroke(strumAt(activeTrack, focus.measure, focus.column), strumKey),
+			});
+			return;
+		}
+
 		if (event.key === "Backspace" || event.key === "Delete") {
 			event.preventDefault();
-			dispatch({ type: "clear-range", trackId: activeTrack.id, rect: normalizeRect(selection) });
+			// Shift+Delete strips just the strum marks, leaving the frets.
+			dispatch({
+				type: event.shiftKey ? "clear-strums" : "clear-range",
+				trackId: activeTrack.id,
+				rect: normalizeRect(selection),
+			});
 			return;
 		}
 		if (event.key === "ArrowUp") {

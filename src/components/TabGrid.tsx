@@ -6,6 +6,8 @@ import { globalCol, normalizeRect } from "../lib/clipboard";
 import { cellRingBars, displayCellValue } from "../lib/cellValue";
 import type { ProgressionSlot } from "../lib/progression";
 import { tieColor } from "../lib/sectionColors";
+import { strumAt } from "../lib/songOps";
+import { strumArrows } from "../lib/strum";
 import { CloseIcon } from "./Icons";
 
 interface Props {
@@ -39,8 +41,7 @@ interface Props {
 
 const headerBtn = "btn text-xs px-2 py-1";
 const dangerHeaderBtn = "btn btn-danger text-xs px-2 py-1";
-const CELL_W = 28;
-/** left margin: 40px note-name column + 6px gap + 14px opening bar */
+const CELL_W = 28;/** left margin: 40px note-name column + 6px gap + 14px opening bar */
 const GUTTER = 60;
 /** one measure block: its cells plus the trailing barline slot */
 const MEASURE_W = CELL_W * COLS_PER_MEASURE + 14;
@@ -77,6 +78,8 @@ export default function TabGrid({
 }: Props) {
 	const rect = selected ? normalizeRect(selected) : null;
 	const focus = selected?.focus ?? null;
+	// The strum row only appears once the track has a strum marked.
+	const hasStrums = track.strums?.some((row) => row.some((strum) => strum !== null)) ?? false;
 
 	// Keep the playing line in view — matched on the slot as well as the
 	// measure, since a repeated section is on screen more than once.
@@ -281,7 +284,7 @@ export default function TabGrid({
 
 						{chunkMeasures(measureIndices).map((lineMeasures) => (
 							<div
-								className="mb-4 scroll-mt-[190px]"
+								className="mb-2 last:mb-4 scroll-mt-[190px]"
 								key={lineMeasures[0]}
 								data-slot={slot.index}
 								data-line-start={lineMeasures[0]}
@@ -299,7 +302,8 @@ export default function TabGrid({
 												className="flex items-center gap-1 shrink-0 text-xs font-mono text-ink-faint"
 												style={{ width: CELL_W * COLS_PER_MEASURE }}
 											>
-												#{m + 1}
+												{/* the bar as played — each pass of a repeat numbers on */}
+												#{slot.startStep / COLS_PER_MEASURE + (m - slot.startMeasure) + 1}
 												{measureCount > 1 && (
 													<button
 														className="bg-transparent hover:text-accent text-ink-soft px-1.5 leading-none"
@@ -403,6 +407,32 @@ export default function TabGrid({
 											))}
 										</div>
 									))}
+									{hasStrums && (
+										<div className="flex items-center" aria-label="strums">
+											<span className="w-10 shrink-0 mr-1.5" />
+											<span className="w-3.5 shrink-0" />
+											{lineMeasures.map((m) => (
+												<span className="flex items-center shrink-0" key={m}>
+													{Array.from({ length: COLS_PER_MEASURE }, (_, c) => {
+														const arrows = strumArrows(strumAt(track, m, c));
+														return (
+															<span
+																key={c}
+																style={{ width: CELL_W }}
+																className={
+																	"h-[20px] shrink-0 text-center leading-[20px] font-mono text-ink-soft select-none tracking-[-0.1em] " +
+																	(arrows.length > 2 ? "text-[11px]" : "text-[13px]")
+																}
+															>
+																{arrows}
+															</span>
+														);
+													})}
+													<span className="w-3.5 shrink-0" />
+												</span>
+											))}
+										</div>
+									)}
 								</div>
 							</div>
 						))}

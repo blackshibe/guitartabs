@@ -1,11 +1,18 @@
-import type { ProgressionEntry, SectionRange, Song, Track } from "../types";
+import type { ProgressionEntry, SectionRange, Song, Strum, Track } from "../types";
 import { COLS_PER_MEASURE, chunkMeasures, stringMidi } from "./instruments";
 import { midiToNoteName } from "./tunings";
 import { cellRingBars, exportCellLabel } from "./cellValue";
-import { measureIsEmpty, measuresEqual, sectionRangesFor } from "./songOps";
+import { strumLetters } from "./strum";
+import { measureIsEmpty, measuresEqual, sectionRangesFor, strumAt } from "./songOps";
+
+function measureStrums(track: Track, m: number): (Strum | null)[] {
+	return Array.from({ length: COLS_PER_MEASURE }, (_, c) => strumAt(track, m, c));
+}
 
 function trackMeasureEq(track: Track, a: number, b: number): boolean {
-	return measuresEqual(track.measures[a], track.measures[b]);
+	if (!measuresEqual(track.measures[a], track.measures[b])) return false;
+	const strumsB = measureStrums(track, b);
+	return measureStrums(track, a).every((strum, c) => strum === strumsB[c]);
 }
 
 function sectionsEqualFor(track: Track, a: SectionRange, b: SectionRange): boolean {
@@ -56,40 +63,46 @@ export function ringFill(track: Track, measureIndices: number[]): boolean[][] {
 }
 
 function stringsLines(track: Track, measureIndices: number[]): string[] {
-	// One column width for the whole section: any 2-digit fret widens every column.
-	const width = Math.max(
-		2,
-		...measureIndices.flatMap((m) =>
-			(track.measures[m] ?? []).map(
-				(col) => Math.max(...col.map((value) => (exportCellLabel(value) ?? "-").length)) + 1,
-			),
-		),
-	);
 	const fill = ringFill(track, measureIndices);
 	const out: string[] = [];
 	chunkMeasures(measureIndices).forEach((lineMeasures) => {
 		const base = measureIndices.indexOf(lineMeasures[0]) * COLS_PER_MEASURE;
 		const lines = track.tuning.map((str) => midiToNoteName(stringMidi(str)).padEnd(2, " ") + "|");
+		// Strum marks print on their own line under the strings, D / U under
+		// their column ("DU" for a split column, which widens it to fit).
+		const strummed = lineMeasures.some((m) => measureStrums(track, m).some((strum) => strum !== null));
+		let strumLine = "   ";
 		lineMeasures.forEach((m, lineIndex) => {
 			const measure = track.measures[m];
 			if (!measure) return;
 			measure.forEach((col, ci) => {
 				const position = base + lineIndex * COLS_PER_MEASURE + ci;
+				// Each column is only as wide as its own widest label, so one
+				// 2-digit fret doesn't stretch every other column.
+				const strum = strumLetters(strumAt(track, m, ci));
+				const width = Math.max(strum.length, ...col.map((value) => (exportCellLabel(value) ?? "-").length)) + 1;
 				col.forEach((value, s) => {
 					const ringing = cellRingBars(value) > 0 || fill[s]?.[position] === true;
 					const label = exportCellLabel(value) ?? (ringing ? "~" : "-");
-					lines[s] += (ci === 0 ? " " : "") + label.padEnd(width, ringing ? "~" : " ");
+					lines[s] += (ci === 0 ? "-" : "") + label.padEnd(width, ringing ? "~" : "-");
 				});
+				strumLine += (ci === 0 ? " " : "") + strum.padEnd(width, " ");
 			});
 			lines.forEach((_, s) => (lines[s] += "|"));
+			strumLine += " ";
 		});
-		out.push(...lines, "");
+		out.push(...lines);
+		if (strummed) out.push(strumLine.trimEnd());
+		out.push("");
 	});
 	return out;
 }
 
 function trackSectionEmpty(track: Track, measureIndices: number[]): boolean {
-	return measureIndices.every((m) => measureIsEmpty(track.measures[m]));
+	// A strum pattern with no frets under it is still content.
+	return measureIndices.every(
+		(m) => measureIsEmpty(track.measures[m]) && measureStrums(track, m).every((strum) => strum === null),
+	);
 }
 
 interface ArrangementStep {
@@ -113,6 +126,9 @@ export interface TrackSheetSection {
 	repeats: number;
 	comments: string[];
 	measureIndices: number[];
+	/** 0-based played bar this block starts on — counts every repeat, and the
+	 *  bars of sections skipped as empty for this track */
+	startBar: number;
 }
 
 // The shared arrangement fold both exports draw from: consecutive steps with
@@ -121,6 +137,7 @@ export interface TrackSheetSection {
 export function trackSheetSections(song: Song, track: Track): TrackSheetSection[] {
 	const steps = arrangementSteps(song);
 	const out: TrackSheetSection[] = [];
+	let playedBars = 0;
 	let i = 0;
 	while (i < steps.length) {
 		const sec = steps[i].section;
@@ -134,11 +151,15 @@ export function trackSheetSections(song: Song, track: Track): TrackSheetSection[
 		const allIndices = Array.from({ length: span }, (_, off) => sec.startMeasure + off);
 		const { unit, times } = findRepeatUnit(allIndices, (a, b) => trackMeasureEq(track, a, b));
 		const measureIndices = allIndices.slice(0, unit);
+		const startBar = playedBars;
+		playedBars += span * groupCount;
 		if (trackSectionEmpty(track, measureIndices)) continue;
-		const comments = [sec.comment, sec.trackComments?.[track.id]]
+		// Only the per-track notes: the song-wide Section.comment has no editor
+		// anymore, so whatever it still holds is stale and stays out of exports.
+		const comments = [sec.trackComments?.[track.id]]
 			.filter((text): text is string => !!text)
 			.flatMap((text) => text.split("\n"));
-		out.push({ name: sec.name, repeats: groupCount * times, comments, measureIndices });
+		out.push({ name: sec.name, repeats: groupCount * times, comments, measureIndices, startBar });
 	}
 	return out;
 }

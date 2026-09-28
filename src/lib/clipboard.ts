@@ -1,6 +1,6 @@
-import type { Measure, RangeSelection, SectionRange, Track } from "../types";
+import type { Measure, RangeSelection, SectionRange, Strum, StrumRow, Track } from "../types";
 import { COLS_PER_MEASURE } from "./instruments";
-import { deepCopyMeasures } from "./songOps";
+import { deepCopyMeasures, strumAt, strumRowsFor } from "./songOps";
 
 // A rectangular cell range: global columns (measure * COLS_PER_MEASURE +
 // column) so a selection crosses measure boundaries, string rows
@@ -33,6 +33,8 @@ export interface CellClipboard {
 	cols: number;
 	/** data[row][col], row 0 = rect's top string */
 	data: (string | null)[][];
+	/** strums[col] — only when the copy spanned every string (whole columns) */
+	strums?: (Strum | null)[];
 }
 
 export interface SectionClipboard {
@@ -42,7 +44,7 @@ export interface SectionClipboard {
 	comment?: string;
 	/** by track index at copy time */
 	trackComments?: Record<number, string>;
-	tracks: { measures: Measure[] }[];
+	tracks: { measures: Measure[]; strums?: StrumRow[] }[];
 	/** measureNotes[off] for off in [0, span) */
 	measureNotes?: string[];
 	/** origin song — linking is only offered inside the same song */
@@ -69,7 +71,14 @@ export function copyRange(track: Track, rect: Rect): CellClipboard {
 		}
 		data.push(values);
 	}
-	return { kind: "tab-editor/cells", rows, cols, data };
+	const clip: CellClipboard = { kind: "tab-editor/cells", rows, cols, data };
+	if (rect.startString <= 0 && endString >= track.tuning.length - 1) {
+		clip.strums = Array.from({ length: cols }, (_, offset) => {
+			const column = rect.startColumn + offset;
+			return strumAt(track, Math.floor(column / COLS_PER_MEASURE), column % COLS_PER_MEASURE);
+		});
+	}
+	return clip;
 }
 
 export function sectionToClipboard(
@@ -95,6 +104,7 @@ export function sectionToClipboard(
 		colorIndex: section.colorIndex,
 		tracks: tracks.map((track) => ({
 			measures: deepCopyMeasures(track.measures.slice(section.startMeasure, section.endMeasure + 1)),
+			strums: track.strums ? strumRowsFor(track, section.startMeasure, section.endMeasure) : undefined,
 		})),
 		measureNotes: measureNotes?.slice(section.startMeasure, section.endMeasure + 1),
 	};

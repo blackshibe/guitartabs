@@ -7,8 +7,10 @@ import {
 	normalizeProgression,
 	playableSteps,
 	secondsAtStep,
+	soundingCellsAt,
 	stepOf,
 } from "../progression";
+import { buildTrack, poke } from "./helpers";
 import { COLS_PER_MEASURE } from "../instruments";
 import type { Section } from "../../types";
 import { sectionRangesFor } from "../songOps";
@@ -139,5 +141,29 @@ describe("entryIndexForSection", () => {
 		expect(entryIndexForSection(progression, SECTIONS, 2)).toBe(1);
 		expect(entryIndexForSection(progression, SECTIONS, 6)).toBe(2);
 		expect(entryIndexForSection(progression, SECTIONS, 0)).toBe(0);
+	});
+});
+
+describe("soundingCellsAt", () => {
+	const ranges = sectionRangesFor([{ id: 1, name: "A", startMeasure: 0 }], 2);
+	const slots = buildSlots(ranges, [{ id: 90, sectionId: 1, repeat: 2 }]);
+
+	it("re-strums the last chord on a strum mark over an empty column", () => {
+		const track = buildTrack(10, 2);
+		poke(track, 0, 0, 0, "3");
+		poke(track, 0, 0, 1, "5");
+		track.strums = [[null, null, "u", null, null, null, null, null]];
+		expect(soundingCellsAt(slots, track, 2)).toEqual(["3", "5"]);
+		expect(soundingCellsAt(slots, track, 3)).toEqual([null, null]);
+	});
+
+	it("reaches back across a repeat to the chord played before it", () => {
+		const track = buildTrack(10, 2);
+		poke(track, 1, 7, 0, "7");
+		track.strums = [["d", null, null, null, null, null, null, null]];
+		// step 16 is the second pass's first column; the first pass ended on the 7
+		expect(soundingCellsAt(slots, track, 16)).toEqual(["7", null]);
+		// nothing played before the very first column — it stays silent
+		expect(soundingCellsAt(slots, track, 0)).toEqual([null, null]);
 	});
 });

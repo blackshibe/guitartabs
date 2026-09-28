@@ -6,6 +6,7 @@ import type {
 	Song,
 	SongStem,
 	StringTuning,
+	Strum,
 	Track,
 	TrackBacking,
 	YoutubeSync,
@@ -20,6 +21,9 @@ import {
 	insertBlankMeasures,
 	insertMeasuresIntoTrack,
 	sectionRangesFor,
+	strumAt,
+	strumRowsFor,
+	writeStrums,
 } from "./songOps";
 
 export interface SongState {
@@ -47,7 +51,9 @@ export type SongAction =
 	| { type: "set-bpm"; bpm: number }
 	| { type: "set-section-bpm"; id: number; bpm: number | null }
 	| { type: "set-cell"; trackId: number; measure: number; column: number; stringIndex: number; value: string | null }
+	| { type: "set-strum"; trackId: number; measure: number; column: number; strum: Strum | null }
 	| { type: "clear-range"; trackId: number; rect: Rect }
+	| { type: "clear-strums"; trackId: number; rect: Rect }
 	| { type: "paste-cells"; trackId: number; at: CellPos; clip: CellClipboard }
 	| { type: "set-measure-note"; measure: number; text: string }
 	| { type: "insert-measure"; after: number }
@@ -174,6 +180,7 @@ function insertSectionBlock(
 	marker: Omit<Section, "id" | "startMeasure">,
 	notes: string[] | undefined,
 	trackContent: (t: Track, index: number) => Track["measures"],
+	trackStrums?: (t: Track, index: number) => Track["strums"],
 ): SongState {
 	const id = nextId();
 	const sections = [
@@ -182,7 +189,7 @@ function insertSectionBlock(
 	];
 	return {
 		...state,
-		tracks: state.tracks.map((t, i) => insertMeasuresIntoTrack(t, at, trackContent(t, i))),
+		tracks: state.tracks.map((t, i) => insertMeasuresIntoTrack(t, at, trackContent(t, i), trackStrums?.(t, i))),
 		measureCount: state.measureCount + span,
 		measureNotes: spliceNotes(state.measureNotes, at, notes ?? Array(span).fill("")),
 		sections,
@@ -222,23 +229,65 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 			});
 		}
 
+		case "set-strum": {
+			const { trackId, measure: m, column: c, strum } = action;
+			const track = state.tracks.find((t) => t.id === trackId);
+			if (!track || m < 0 || m >= state.measureCount || c < 0 || c >= COLS_PER_MEASURE) return state;
+			if (strumAt(track, m, c) === strum) return state;
+			const writes = mirrorMeasures(rangesOf(state), m).map((p) => ({ measure: p, column: c, strum }));
+			return updateTrack(state, trackId, (t) => writeStrums(t, writes));
+		}
+
+		// Only the strum marks of the rect's columns — the frets stay.
+		case "clear-strums": {
+			const { trackId, rect } = action;
+			const track = state.tracks.find((t) => t.id === trackId);
+			if (!track) return state;
+			const ranges = rangesOf(state);
+			const writes: { measure: number; column: number; strum: null }[] = [];
+			for (let g = rect.startColumn; g <= rect.endColumn; g++) {
+				const m = Math.floor(g / COLS_PER_MEASURE);
+				const c = g % COLS_PER_MEASURE;
+				if (m < 0 || m >= state.measureCount) continue;
+				mirrorMeasures(ranges, m).forEach((p) => {
+					if (strumAt(track, p, c) !== null) writes.push({ measure: p, column: c, strum: null });
+				});
+			}
+			if (writes.length === 0) return state;
+			return updateTrack(state, trackId, (t) => writeStrums(t, writes));
+		}
+
 		case "clear-range": {
 			const { trackId, rect } = action;
 			const track = state.tracks.find((t) => t.id === trackId);
 			if (!track) return state;
 			const ranges = rangesOf(state);
+			// Strum marks go too when the range is whole columns, or when it holds
+			// no frets at all — then the marks are the only thing to delete.
+			const wholeColumns = rect.startString <= 0 && rect.endString >= track.tuning.length - 1;
+			let holdsFrets = false;
+			for (let g = rect.startColumn; g <= rect.endColumn && !holdsFrets; g++) {
+				const column = track.measures[Math.floor(g / COLS_PER_MEASURE)]?.[g % COLS_PER_MEASURE] ?? [];
+				for (let s = rect.startString; s <= rect.endString; s++) {
+					if (column[s] !== null && column[s] !== undefined && column[s] !== "") holdsFrets = true;
+				}
+			}
+			const clearStrums = wholeColumns || !holdsFrets;
 			return updateTrack(state, trackId, (t) => {
 				const measures = deepCopyMeasures(t.measures);
 				const endString = Math.min(rect.endString, t.tuning.length - 1);
+				const strumWrites: { measure: number; column: number; strum: null }[] = [];
 				for (let g = rect.startColumn; g <= rect.endColumn; g++) {
 					const m = Math.floor(g / COLS_PER_MEASURE);
 					const c = g % COLS_PER_MEASURE;
 					if (m < 0 || m >= state.measureCount) continue;
 					mirrorMeasures(ranges, m).forEach((p) => {
 						for (let s = rect.startString; s <= endString; s++) measures[p][c][s] = null;
+						if (clearStrums && strumAt(t, p, c) !== null) strumWrites.push({ measure: p, column: c, strum: null });
 					});
 				}
-				return { ...t, measures };
+				const cleared = { ...t, measures };
+				return strumWrites.length > 0 ? writeStrums(cleared, strumWrites) : cleared;
 			});
 		}
 
@@ -251,6 +300,7 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 			const ranges = rangesOf(state);
 			return updateTrack(state, trackId, (t) => {
 				const measures = deepCopyMeasures(t.measures);
+				const strumWrites: { measure: number; column: number; strum: Strum | null }[] = [];
 				for (let i = 0; i < clip.cols; i++) {
 					const g = startCol + i;
 					if (g > maxCol) break;
@@ -262,9 +312,12 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 							if (s >= t.tuning.length) break;
 							measures[p][c][s] = clip.data[r][i] ?? null;
 						}
+						// Whole-column copies carry their strum marks.
+						if (clip.strums) strumWrites.push({ measure: p, column: c, strum: clip.strums[i] ?? null });
 					});
 				}
-				return { ...t, measures };
+				const pasted = { ...t, measures };
+				return strumWrites.length > 0 ? writeStrums(pasted, strumWrites) : pasted;
 			});
 		}
 
@@ -405,7 +458,11 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 						col.slice(),
 					);
 				}
-				return { ...t, measures };
+				if (!t.strums) return { ...t, measures };
+				const strumWrites = strumRowsFor(t, sourceRange.startMeasure, sourceRange.endMeasure).flatMap((row, off) =>
+					row.map((strum, column) => ({ measure: targetRange.startMeasure + off, column, strum })),
+				);
+				return writeStrums({ ...t, measures }, strumWrites);
 			});
 			const groupColor =
 				source.colorIndex ?? ranges.find((r) => rootIdOf(r) === rootId && r.colorIndex != null)?.colorIndex;
@@ -489,6 +546,7 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 					if (!payload) return makeMeasures(t.tuning.length, clip.span);
 					return fitMeasuresTo(t, payload.measures, clip.span);
 				},
+				(_, i) => clip.tracks[i]?.strums,
 			);
 		}
 

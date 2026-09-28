@@ -20,11 +20,24 @@ export interface SongStem {
 	volume?: number;
 }
 
+/** One strum stroke: "d" down (low string to high), "u" up. */
+export type Stroke = "d" | "u";
+
+/** A column's strum mark: 1–4 strokes splitting the column evenly, e.g. "d",
+ *  "du", "dudu" (see lib/strum.ts). */
+export type Strum = string;
+
+/** strums[m][c] for one measure's columns; null = unmarked. */
+export type StrumRow = (Strum | null)[];
+
 export interface Track {
 	id: number;
 	name: string;
 	tuning: StringTuning[];
 	measures: Measure[];
+	/** strum marks parallel to `measures` (lazily grown — shorter or absent
+	 *  means unmarked); spliced with the measures everywhere */
+	strums?: StrumRow[];
 	/** playback mix gain 0–1; absent = 1 */
 	volume?: number;
 	/** backing-track audio replacing this track's synth: plays timeline-aligned

@@ -1,4 +1,5 @@
-import type { ProgressionEntry, Section, SectionRange } from "../types";
+import type { Column, ProgressionEntry, Section, SectionRange, Track } from "../types";
+import { strumAt } from "./songOps";
 import { COLS_PER_MEASURE, nextId } from "./instruments";
 
 // The arrangement layer. Sections are modules defined once on the measure
@@ -165,4 +166,29 @@ export function entryIndexForSection(
 		if ((startOf.get(entry.sectionId) ?? -1) < startMeasure) index = position + 1;
 	});
 	return index;
+}
+
+function columnHasNotes(column: Column | undefined): boolean {
+	return column?.some((value) => value !== null && value !== "") ?? false;
+}
+
+/** A strum mark on a column with no frets re-strums the chord held from before. */
+export function isRestrum(track: Track, measure: number, column: number): boolean {
+	return strumAt(track, measure, column) !== null && !columnHasNotes(track.measures[measure]?.[column]);
+}
+
+// The cells a step sounds for a track: its own frets, or — on a restrum — the
+// last chord played before it in arrangement order.
+export function soundingCellsAt(slots: ProgressionSlot[], track: Track, step: number): Column | undefined {
+	const at = locateStep(slots, step);
+	if (!at) return undefined;
+	const own = track.measures[at.measure]?.[at.column];
+	if (!isRestrum(track, at.measure, at.column)) return own;
+	for (let back = step - 1; back >= 0; back--) {
+		const earlier = locateStep(slots, back);
+		if (!earlier) break;
+		const cells = track.measures[earlier.measure]?.[earlier.column];
+		if (columnHasNotes(cells)) return cells;
+	}
+	return own;
 }

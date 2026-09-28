@@ -1,7 +1,8 @@
 import type { ProgressionEntry, Section, Song, Track } from "../types";
 import { advanceIdCounter, makeMeasure, nextId } from "./instruments";
 import { normalizeProgression } from "./progression";
-import { sectionRangesFor } from "./songOps";
+import { blankStrumRow, sectionRangesFor } from "./songOps";
+import { normalizeStrum } from "./strum";
 import { compressText, decompressText, isCompressedExport } from "./lzw";
 
 // Songs live in IndexedDB — localStorage's ~5MB quota can't hold stem audio.
@@ -202,6 +203,7 @@ function resyncLiveFeatures(song: Song): Song {
 	const tracks: Track[] = song.tracks.map((t) => ({
 		...t,
 		measures: t.measures.map((measure) => measure.map((col) => col.slice())),
+		strums: t.strums?.map((row) => row.map(normalizeStrum)),
 	}));
 	ranges.forEach((r) => {
 		if (r.linkTo == null) return;
@@ -213,6 +215,10 @@ function resyncLiveFeatures(song: Song): Song {
 			for (let off = 0; off < span; off++) {
 				const from = t.measures[src.startMeasure + off];
 				t.measures[r.startMeasure + off] = from ? from.map((col) => col.slice()) : makeMeasure(t.tuning.length);
+				if (t.strums) {
+					while (t.strums.length <= r.startMeasure + off) t.strums.push(blankStrumRow());
+					t.strums[r.startMeasure + off] = (t.strums[src.startMeasure + off] ?? blankStrumRow()).slice();
+				}
 			}
 		});
 	});

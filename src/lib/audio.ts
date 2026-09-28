@@ -27,6 +27,10 @@ export function setMasterVolume(volume: number): void {
 	if (masterGain) masterGain.gain.value = masterVolume;
 }
 
+// Every scheduled synth voice, so stopping playback can silence the notes
+// already queued in the lookahead window and the sustains still ringing.
+const activeVoices = new Set<{ osc: OscillatorNode; gain: GainNode }>();
+
 // Plucked-string-ish tone: short decaying triangle wave.
 export function playNote(freq: number, time: number, duration = 0.35, volume = 1): void {
 	if (volume <= 0) return;
@@ -42,6 +46,32 @@ export function playNote(freq: number, time: number, duration = 0.35, volume = 1
 	gain.connect(getMasterGain());
 	osc.start(time);
 	osc.stop(time + duration + 0.05);
+	const voice = { osc, gain };
+	activeVoices.add(voice);
+	osc.onended = () => activeVoices.delete(voice);
+}
+
+/** Silence every scheduled synth note now — a 10ms fade, so no click. */
+export function stopNotes(): void {
+	if (!ctx) return;
+	const t = ctx.currentTime;
+	activeVoices.forEach(({ osc, gain }) => {
+		gain.gain.cancelScheduledValues(t);
+		gain.gain.setValueAtTime(gain.gain.value, t);
+		gain.gain.linearRampToValueAtTime(0, t + 0.01);
+		try {
+			osc.stop(t + 0.015);
+		} catch {
+			// already stopped
+		}
+	});
+	activeVoices.clear();
+}
+
+/** Seconds between the audio clock and the speakers — the playhead waits it out. */
+export function outputLatency(): number {
+	if (!ctx) return 0;
+	return ctx.outputLatency || ctx.baseLatency || 0;
 }
 
 // Decoded buffers cached by payload object identity — reducer edits that

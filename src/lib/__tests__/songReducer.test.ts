@@ -516,3 +516,62 @@ describe("history", () => {
 		expect(history.present.id).toBe("song-2");
 	});
 });
+
+describe("strums", () => {
+	const strumOf = (state: SongState, measure: number, column: number) =>
+		state.tracks[0].strums?.[measure]?.[column] ?? null;
+
+	it("set-strum marks a column and a repeat of the same mark is a no-op", () => {
+		const state = songReducer(stateOf(buildSong()), {
+			type: "set-strum",
+			trackId: 10,
+			measure: 2,
+			column: 3,
+			strum: "d",
+		});
+		expect(strumOf(state, 2, 3)).toBe("d");
+		expect(songReducer(state, { type: "set-strum", trackId: 10, measure: 2, column: 3, strum: "d" })).toBe(state);
+	});
+
+	it("strum rows move with their measures on insert and delete", () => {
+		let state = songReducer(stateOf(buildSong()), {
+			type: "set-strum",
+			trackId: 10,
+			measure: 1,
+			column: 0,
+			strum: "u",
+		});
+		state = songReducer(state, { type: "insert-measure", after: 0 });
+		expect(strumOf(state, 2, 0)).toBe("u");
+		expect(strumOf(state, 1, 0)).toBeNull();
+		state = songReducer(state, { type: "delete-measure", measure: 0 });
+		expect(strumOf(state, 1, 0)).toBe("u");
+	});
+
+	it("clear-strums drops the marks and keeps the frets", () => {
+		let state = songReducer(stateOf(buildSong()), { type: "set-strum", trackId: 10, measure: 0, column: 1, strum: "du" });
+		state = songReducer(state, { type: "set-cell", trackId: 10, measure: 0, column: 1, stringIndex: 0, value: "3" });
+		const rect = { startColumn: 0, endColumn: 2, startString: 0, endString: 0 };
+		const next = songReducer(state, { type: "clear-strums", trackId: 10, rect });
+		expect(strumOf(next, 0, 1)).toBeNull();
+		expect(next.tracks[0].measures[0][1][0]).toBe("3");
+		expect(songReducer(next, { type: "clear-strums", trackId: 10, rect })).toBe(next);
+	});
+
+	it("clears strums over whole columns or fret-less ranges; a partial range over frets keeps them", () => {
+		let state = songReducer(stateOf(buildSong()), {
+			type: "set-strum",
+			trackId: 10,
+			measure: 0,
+			column: 1,
+			strum: "du",
+		});
+		const rect = { startColumn: 1, endColumn: 1, startString: 0, endString: 0 };
+		// nothing but the strum under the cursor — Delete removes the strum
+		expect(strumOf(songReducer(state, { type: "clear-range", trackId: 10, rect }), 0, 1)).toBeNull();
+		state = songReducer(state, { type: "set-cell", trackId: 10, measure: 0, column: 1, stringIndex: 0, value: "3" });
+		expect(strumOf(songReducer(state, { type: "clear-range", trackId: 10, rect }), 0, 1)).toBe("du");
+		const whole = { ...rect, endString: 1 };
+		expect(strumOf(songReducer(state, { type: "clear-range", trackId: 10, rect: whole }), 0, 1)).toBeNull();
+	});
+});

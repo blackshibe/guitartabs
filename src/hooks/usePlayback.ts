@@ -1,12 +1,25 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import type { Playhead, Song } from "../types";
-import { COLS_PER_MEASURE, stringMidi } from "../lib/instruments";
+import type { Playhead, Song, Stroke } from "../types";
+import { COLS_PER_MEASURE, MEASURES_PER_LINE, stringMidi } from "../lib/instruments";
 import { midiToFreq } from "../lib/tunings";
-import { now, playNote, resumeAudio, startStem, stopStems } from "../lib/audio";
+import { now, outputLatency, playNote, resumeAudio, startStem, stopNotes, stopStems } from "../lib/audio";
 import { cellMidiOffset, parseCellValue } from "../lib/cellValue";
-import { locateStep, playableSteps, secondsAtStep, slotStepSeconds, type ProgressionSlot } from "../lib/progression";
+import { strumAt } from "../lib/songOps";
+import { strokesOf } from "../lib/strum";
+import {
+	isRestrum,
+	locateStep,
+	playableSteps,
+	secondsAtStep,
+	slotStepSeconds,
+	soundingCellsAt,
+	type ProgressionSlot,
+} from "../lib/progression";
 import { videoSecondsForStep } from "../lib/youtube";
 import type { YoutubeSyncHandle } from "../components/YoutubeSync";
+
+/** gap between successive strings of a strummed column */
+const STRUM_SPREAD_SECONDS = 0.014;
 
 // Playback mixes every track together over the arrangement — the progression's
 // expanded slot list, not the raw measure timeline — plus the reference video
@@ -36,7 +49,8 @@ export function usePlayback(
 	const tracksRef = useRef(tracks);
 	tracksRef.current = tracks;
 
-	const stopPlayback = useCallback(() => {
+	// Reaching the end lets the last notes ring out; a user stop silences them.
+	const finishPlayback = useCallback(() => {
 		if (schedulerTimeoutRef.current) clearTimeout(schedulerTimeoutRef.current);
 		schedulerTimeoutRef.current = null;
 		visualTimeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
@@ -47,6 +61,11 @@ export function usePlayback(
 		youtubePlayerRef.current?.pause();
 	}, [youtubePlayerRef]);
 
+	const stopPlayback = useCallback(() => {
+		finishPlayback();
+		stopNotes();
+	}, [finishPlayback]);
+
 	const startPlayback = (fromStep = 0, skipLeadIn = false) => {
 		// Restarting mid-play (scrub, click-to-jump) must kill the previous
 		// scheduler first, or two tick loops would schedule on top of each other.
@@ -55,6 +74,7 @@ export function usePlayback(
 		visualTimeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
 		visualTimeoutsRef.current = [];
 		stopStems();
+		stopNotes();
 		resumeAudio();
 		const stepDuration = 60 / bpm / 2; // seconds per 8th note at the song tempo
 		const scheduleAheadSeconds = 0.15;
@@ -70,6 +90,7 @@ export function usePlayback(
 		if (totalSteps === 0) return;
 		setIsPlaying(true);
 		let nextStepIndex = Math.max(0, Math.min(fromStep, totalSteps - 1));
+		const firstStepIndex = nextStepIndex;
 
 		// Lead-in: stems/backings/video run through it while the synth waits.
 		// Playing from the top rolls through it; jumping to a cell skips it.
@@ -113,14 +134,17 @@ export function usePlayback(
 		});
 
 		// A sustained note rings for its declared bars, but no further than the
-		// next note on the same string — the string can only sound one pitch.
+		// next note on the same string (or a restrum of the held chord) — the
+		// string can only sound one pitch.
 		const ringSeconds = (trackIndex: number, stringIndex: number, step: number, ringBars: number): number => {
 			const maxSteps = ringBars * COLS_PER_MEASURE;
+			const track = tracks[trackIndex];
 			for (let ahead = 1; ahead < maxSteps; ahead++) {
 				const at = locateStep(slots, step + ahead);
 				if (!at || at.slot.unused) break;
-				const value = tracks[trackIndex].measures[at.measure]?.[at.column]?.[stringIndex];
-				if (value !== null && value !== undefined && value !== "") return secondsAt(step + ahead) - secondsAt(step);
+				const value = track.measures[at.measure]?.[at.column]?.[stringIndex];
+				const cut = (value !== null && value !== undefined && value !== "") || isRestrum(track, at.measure, at.column);
+				if (cut) return secondsAt(step + ahead) - secondsAt(step);
 			}
 			return secondsAt(step + maxSteps) - secondsAt(step);
 		};
@@ -130,20 +154,47 @@ export function usePlayback(
 			if (!at) return;
 			const { measure, column } = at;
 			tracks.forEach((track, trackIndex) => {
-				const cells = track.measures[measure]?.[column];
+				const cells = soundingCellsAt(slots, track, stepIndex);
 				if (!cells) return;
 				const liveTrack = tracksRef.current.find((candidate) => candidate.id === track.id) ?? track;
-				cells.forEach((value, stringIndex) => {
-					const parsed = parseCellValue(value);
-					if (!parsed) return;
-					if (liveTrack.backing) return; // the backing audio is this track's sound
-					const midi = stringMidi(track.tuning[stringIndex]) + cellMidiOffset(parsed);
-					const duration =
-						parsed.ringBars > 0 ? ringSeconds(trackIndex, stringIndex, stepIndex, parsed.ringBars) : 0.35;
-					playNote(midiToFreq(midi), time, duration, liveTrack.volume ?? 1);
+				if (liveTrack.backing) return; // the backing audio is this track's sound
+				// A strummed column rolls its notes across the strings instead of
+				// sounding them at once (down starts at the bottom, low row), once
+				// per stroke — the strokes split the column evenly, and each one
+				// cuts the chord the previous stroke left ringing.
+				const strokes = strokesOf(strumAt(track, measure, column));
+				const strokeGap = stepSecondsFor(stepIndex) / Math.max(1, strokes.length);
+				const passes: (Stroke | null)[] = strokes.length > 0 ? strokes : [null];
+				passes.forEach((stroke, strokeIndex) => {
+					const strokeTime = time + strokeIndex * strokeGap;
+					const lastStroke = strokeIndex === passes.length - 1;
+					const order = cells.map((_, stringIndex) => stringIndex);
+					if (stroke === "d") order.reverse();
+					let sounded = 0;
+					order.forEach((stringIndex) => {
+						const parsed = parseCellValue(cells[stringIndex]);
+						if (!parsed) return;
+						const noteTime = stroke ? strokeTime + sounded * STRUM_SPREAD_SECONDS : strokeTime;
+						sounded += 1;
+						const midi = stringMidi(track.tuning[stringIndex]) + cellMidiOffset(parsed);
+						const duration = !lastStroke
+							? strokeTime + strokeGap - noteTime
+							: parsed.ringBars > 0
+								? ringSeconds(trackIndex, stringIndex, stepIndex, parsed.ringBars) - (noteTime - time)
+								: 0.35;
+						playNote(midiToFreq(midi), noteTime, duration, liveTrack.volume ?? 1);
+					});
 				});
 			});
-			const visualDelayMs = Math.max(0, (time - now()) * 1000);
+			// TabGrid glides the playhead INTO a column over the step before it
+			// (a linear `left` transition), so it's set one step early and reaches
+			// the column's edge exactly as the column sounds. A line's first
+			// column (and the first step played) has nothing to glide from — it
+			// lands on time. Output latency delays both, so the line tracks what
+			// is heard, not what is scheduled.
+			const lineStart = column === 0 && (measure - at.slot.startMeasure) % MEASURES_PER_LINE === 0;
+			const showAt = lineStart || stepIndex === firstStepIndex ? time : time - stepSecondsFor(stepIndex - 1);
+			const visualDelayMs = Math.max(0, (showAt + outputLatency() - now()) * 1000);
 			visualTimeoutsRef.current.push(
 				setTimeout(() => setPlayhead({ measure, column, slot: at.slot.index }), visualDelayMs),
 			);
@@ -166,7 +217,7 @@ export function usePlayback(
 				}
 			}
 			if (nextStepIndex >= totalSteps) {
-				schedulerTimeoutRef.current = setTimeout(stopPlayback, Math.max(0, (nextStepTime - now()) * 1000));
+				schedulerTimeoutRef.current = setTimeout(finishPlayback, Math.max(0, (nextStepTime - now()) * 1000));
 				return;
 			}
 			schedulerTimeoutRef.current = setTimeout(tick, tickIntervalMs);
