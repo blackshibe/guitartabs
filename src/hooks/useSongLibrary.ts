@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import type { Song } from "../types";
+import type { Song, StepLyrics } from "../types";
+import type { ConflictChoice } from "../components/ImportConflictDialog";
+import { lyricsAlongTimeline, lyricsOntoTimeline } from "../lib/progression";
 import * as storage from "../lib/storage";
 import { downloadFile } from "../lib/download";
 
 interface UseSongLibraryArguments {
 	song: Song;
 	applySong: (song: Song) => void;
+	/** swap the open song's lyrics (one undo step) */
+	replaceLyrics: (lyrics: StepLyrics) => void;
 	showToast: (message: string) => void;
 }
 
@@ -17,7 +21,7 @@ interface ImportConflicts {
 // The saved-song library (IndexedDB): hydration on mount, debounced autosave,
 // save/load/delete/reorder, and JSON export/import with an overwrite prompt
 // for id conflicts.
-export function useSongLibrary({ song, applySong, showToast }: UseSongLibraryArguments) {
+export function useSongLibrary({ song, applySong, replaceLyrics, showToast }: UseSongLibraryArguments) {
 	const [hydrated, setHydrated] = useState(false);
 	const [librarySongs, setLibrarySongs] = useState<Song[]>([]);
 	const [dirty, setDirty] = useState(false);
@@ -122,11 +126,31 @@ export function useSongLibrary({ song, applySong, showToast }: UseSongLibraryArg
 		}
 	};
 
-	const resolveImportConflicts = async (overwriteIds: string[]) => {
+	const resolveImportConflicts = async (choices: Record<string, ConflictChoice>) => {
 		if (!importConflicts) return;
-		await finishImport(importConflicts.conflicts.filter((candidate) => overwriteIds.includes(candidate.id)));
-		showToast(`Imported ${importConflicts.freshCount + overwriteIds.length}`);
+		const { conflicts, freshCount } = importConflicts;
 		setImportConflicts(null);
+		const overwrite = conflicts.filter((candidate) => choices[candidate.id] === "overwrite");
+		// Lyrics only: the file's words, read off its played timeline, laid bar
+		// for bar onto the saved song's arrangement — its tabs stay as they are.
+		// The open song takes them through the reducer, so it's one undo step.
+		const lyricSongs: Song[] = [];
+		for (const incoming of conflicts.filter((candidate) => choices[candidate.id] === "lyrics")) {
+			const words = lyricsAlongTimeline(incoming);
+			if (incoming.id === song.id) {
+				replaceLyrics(lyricsOntoTimeline(song, words));
+				continue;
+			}
+			const saved = await storage.loadSong(incoming.id);
+			if (saved) lyricSongs.push({ ...saved, lyrics: lyricsOntoTimeline(saved, words), updatedAt: Date.now() });
+		}
+		await finishImport([...overwrite, ...lyricSongs]);
+		const lyricCount = Object.values(choices).filter((choice) => choice === "lyrics").length;
+		showToast(
+			lyricCount > 0
+				? `Imported ${freshCount + overwrite.length}, lyrics into ${lyricCount}`
+				: `Imported ${freshCount + overwrite.length}`,
+		);
 	};
 
 	const loadSong = async (songId: string) => {

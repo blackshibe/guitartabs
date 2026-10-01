@@ -7,7 +7,7 @@
 // from the same folded arrangement the text export walks (trackSheetSections).
 
 import { jsPDF } from "jspdf";
-import type { Song, Track } from "../types";
+import type { LyricRow, Song, Track } from "../types";
 import { COLS_PER_MEASURE, MEASURES_PER_LINE, stringMidi, tuningLabel } from "./instruments";
 import { midiToNoteName } from "./tunings";
 import { exportCellLabel } from "./cellValue";
@@ -20,16 +20,20 @@ const STRING_GAP = 9; // between staff lines
 const FRET_SIZE = 7;
 const STAFF_INDENT = 20; // room for the tuning letters
 const TAB_CLEF_WIDTH = 16; // room for the stacked TAB letters at line start
-const LINE_HEAD = 20; // band above each line for section names, ×N, measure numbers
-const LINE_GAP = 12; // between systems
+const LINE_HEAD = 11; // band above each line for section names, ×N, measure numbers
+const LINE_GAP = 3; // between lines of one section
+const SECTION_GAP = 30; // before a line that starts a section
 const COMMENT_SIZE = 7;
 const COMMENT_LEAD = 8.5; // between wrapped comment rows
 const STRUM_SPACE = 14; // band under the staff for strum arrows
+const LYRIC_SPACE = 4; // pad under that before the lyric rows
+const LYRIC_LEAD = 9.5; // per verse row
+const LYRIC_SIZE = 7.5;
 const FOOTER_SPACE = 26;
 // How far a page may tighten to keep a section's closing line on it: each
 // line gap can shrink to MIN_LINE_GAP, and the last line may reach this far
 // into the footer band (still clear of the page number).
-const MIN_LINE_GAP = 4;
+const MIN_LINE_GAP = 2;
 const SQUEEZE_INTO_FOOTER = 14;
 
 // Grayscale ink levels (0 black – 255 white).
@@ -69,12 +73,18 @@ interface PrintedMeasure {
 	final: boolean;
 	/** first measure of its block — anything else continues a section */
 	blockStart: boolean;
+	/** which section (counting its written-out lyric runs as one) */
+	section: number;
+	/** one lyric row per verse sung over this measure */
+	verses: LyricRow[];
 }
 
 function printedMeasures(song: Song, track: Track): PrintedMeasure[] {
 	const blocks = trackSheetSections(song, track);
 	const out: PrintedMeasure[] = [];
+	let section = -1;
 	blocks.forEach((block, blockIndex) => {
+		if (!block.continues) section += 1;
 		const fill = ringFill(track, block.measureIndices);
 		block.measureIndices.forEach((measureIndex, offset) => {
 			const last = offset === block.measureIndices.length - 1;
@@ -83,20 +93,28 @@ function printedMeasures(song: Song, track: Track): PrintedMeasure[] {
 				bar: block.startBar + offset + 1,
 				fill,
 				fillPosition: offset * COLS_PER_MEASURE,
-				label: offset === 0 && block.name ? block.name : undefined,
+				label: offset === 0 && block.name && !block.continues ? block.name : undefined,
 				comment: offset === 0 && block.comments.length > 0 ? block.comments.join(" · ") : undefined,
 				beginRepeat: offset === 0 && block.repeats > 1,
 				endRepeat: last && block.repeats > 1 ? block.repeats : 0,
 				final: last && blockIndex === blocks.length - 1,
-				blockStart: offset === 0,
+				// a later lyric run of the same section is not a new section
+				blockStart: offset === 0 && !block.continues,
+				verses: block.verses.map((rows) => rows[offset]),
+				section,
 			});
 		});
 	});
 	return out;
 }
 
+export interface PdfOptions {
+	/** start every section on a new line instead of flowing bars continuously */
+	sectionPerLine?: boolean;
+}
+
 /** Render one track of a song as a sheet-style tab PDF. */
-export function buildTrackPdf(song: Song, trackId: number): Uint8Array {
+export function buildTrackPdf(song: Song, trackId: number, options: PdfOptions = {}): Uint8Array {
 	const doc = new jsPDF({ unit: "pt", format: "a4" });
 	const track = song.tracks.find((candidate) => candidate.id === trackId);
 	if (!track) return new Uint8Array(doc.output("arraybuffer"));
@@ -149,18 +167,15 @@ export function buildTrackPdf(song: Song, trackId: number): Uint8Array {
 			return doc.splitTextToSize(sanitize(entry.comment), limit - (notesX + slot * measureWidth) - 4) as string[];
 		});
 		const commentBand = Math.max(0, ...commentRows.map((rows) => rows.length)) * COMMENT_LEAD;
-		const strummed = line.some((entry) =>
-			Array.from({ length: COLS_PER_MEASURE }, (_, column) => strumAt(track, entry.measureIndex, column)).some(
-				(strum) => strum !== null,
-			),
-		);
-		// A line only needs the full head band when something rides above the
-		// staff (section name, ×N); plain continuation lines stay tight.
-		const lineHead =
-			(line.some((entry) => entry.label || entry.comment || entry.endRepeat > 0) ? LINE_HEAD : 8) + commentBand;
-		const lineFoot = strummed ? STRUM_SPACE : 0;
+		const lineHead = LINE_HEAD + commentBand;
+		// The strum/lyric bands are sized per section, so every line of one
+		// section matches and a section without them stays tight.
+		const strumFoot = line.some((entry) => sectionStrummed.has(entry.section)) ? STRUM_SPACE : 0;
+		const verses = Math.max(0, ...line.map((entry) => sectionVerses.get(entry.section) ?? 0));
+		const lineFoot = strumFoot + (verses > 0 ? LYRIC_SPACE + verses * LYRIC_LEAD : 0);
 		return {
 			measureWidth,
+			strumFoot,
 			staffRight,
 			commentRows,
 			commentBand,
@@ -174,14 +189,36 @@ export function buildTrackPdf(song: Song, trackId: number): Uint8Array {
 	// next page, the page tightens its line gaps (and dips into the footer band)
 	// to keep the section's ending with the rest of it.
 	const entries = printedMeasures(song, track);
+	const sectionStrummed = new Set<number>();
+	const sectionVerses = new Map<number, number>();
+	entries.forEach((entry) => {
+		if (Array.from({ length: COLS_PER_MEASURE }, (_, column) => strumAt(track, entry.measureIndex, column)).some((strum) => strum !== null))
+			sectionStrummed.add(entry.section);
+		sectionVerses.set(entry.section, Math.max(sectionVerses.get(entry.section) ?? 0, entry.verses.length));
+	});
 	const pageBottom = pageHeight - MARGIN - FOOTER_SPACE;
-	const planned: { line: PrintedMeasure[]; firstIndex: number; y: number; page: number }[] = [];
+	const planned: { line: PrintedMeasure[]; firstIndex: number; y: number; page: number; gap: number }[] = [];
 	let planY = MARGIN + 48;
 	let planPage = 1;
+	// Up to MEASURES_PER_LINE bars from `from` — cut short before the next
+	// section when every section starts its own line.
+	const lineFrom = (from: number) => {
+		let end = Math.min(from + MEASURES_PER_LINE, entries.length);
+		if (options.sectionPerLine) {
+			const nextSection = entries.findIndex((entry, index) => index > from && index < end && entry.blockStart);
+			if (nextSection !== -1) end = nextSection;
+		}
+		return entries.slice(from, end);
+	};
 	let cursor = 0;
 	while (cursor < entries.length) {
-		const line = entries.slice(cursor, cursor + MEASURES_PER_LINE);
+		const line = lineFrom(cursor);
 		const { height } = layout(line);
+		// Lines of one section sit close; a line where a section begins — even
+		// mid-line, when bars flow through section boundaries — gets air above it.
+		const firstOnPage = !planned.some((placed) => placed.page === planPage);
+		const gap = firstOnPage ? 0 : line.some((entry) => entry.blockStart) ? SECTION_GAP : LINE_GAP;
+		planY += gap;
 		const overflow = planY + height - pageBottom;
 		if (overflow > 0) {
 			const onPage = planned.filter((placed) => placed.page === planPage);
@@ -192,14 +229,18 @@ export function buildTrackPdf(song: Song, trackId: number): Uint8Array {
 					const next = entries[cursor + index + 1];
 					return next === undefined || next.blockStart;
 				});
-			// Every line on the page (and this one) sits after a gap that can shrink.
-			const gapSlack = onPage.length * (LINE_GAP - MIN_LINE_GAP);
+			// Every gap on the page (and this line's) can shrink to MIN_LINE_GAP.
+			const gaps = [...onPage.map((placed) => placed.gap), gap];
+			const gapSlack = gaps.reduce((sum, each) => sum + Math.max(0, each - MIN_LINE_GAP), 0);
 			if (closesSection && onPage.length > 0 && overflow <= gapSlack + SQUEEZE_INTO_FOOTER) {
-				const shrink = Math.min(overflow, gapSlack) / onPage.length;
-				onPage.forEach((placed, index) => {
-					placed.y -= shrink * index;
+				const ratio = gapSlack > 0 ? Math.min(overflow, gapSlack) / gapSlack : 0;
+				let shift = 0;
+				onPage.forEach((placed) => {
+					shift += Math.max(0, placed.gap - MIN_LINE_GAP) * ratio;
+					placed.y -= shift;
 				});
-				planned.push({ line, firstIndex: cursor, y: planY - shrink * onPage.length, page: planPage });
+				shift += Math.max(0, gap - MIN_LINE_GAP) * ratio;
+				planned.push({ line, firstIndex: cursor, y: planY - shift, page: planPage, gap });
 				planY = pageBottom + SQUEEZE_INTO_FOOTER + 1; // the page is full
 				cursor += line.length;
 				continue;
@@ -207,8 +248,8 @@ export function buildTrackPdf(song: Song, trackId: number): Uint8Array {
 			planPage += 1;
 			planY = MARGIN;
 		}
-		planned.push({ line, firstIndex: cursor, y: planY, page: planPage });
-		planY += height + LINE_GAP;
+		planned.push({ line, firstIndex: cursor, y: planY, page: planPage, gap: planY === MARGIN ? 0 : gap });
+		planY += height;
 		cursor += line.length;
 	}
 
@@ -218,13 +259,17 @@ export function buildTrackPdf(song: Song, trackId: number): Uint8Array {
 			doc.addPage();
 			currentPage = page;
 		}
-		const { measureWidth, staffRight, commentRows, commentBand, lineHead } = layout(line);
+		const { measureWidth, staffRight, commentRows, commentBand, lineHead, strumFoot } = layout(line);
 		const staffTop = y + lineHead;
 		const staffBottom = staffTop + staffHeight;
 		// Measure numbers, section names and ×N share the head row, above any comments.
 		const headY = staffTop - 5 - commentBand;
 		const stringY = (stringIndex: number) => staffTop + stringIndex * STRING_GAP;
 		const midY = staffTop + staffHeight / 2;
+		const lyricY = (verse: number) => staffBottom + strumFoot + LYRIC_SPACE + 5 + verse * LYRIC_LEAD;
+		// Right edge of the last lyric drawn per verse row, so a long word
+		// pushes the next one along.
+		const lyricEnd: number[] = [];
 
 		// Staff lines; tuning letters only open the piece, like the clef.
 		track.tuning.forEach((str, stringIndex) => {
@@ -308,6 +353,14 @@ export function buildTrackPdf(song: Song, trackId: number): Uint8Array {
 					doc.setLineWidth(0.6);
 					doc.line(x, top, x, bottom);
 					doc.triangle(x - halfHead, tip + back, x + halfHead, tip + back, x, tip, "F");
+				});
+				entry.verses.forEach((row, verse) => {
+					const lyric = sanitize(row[columnIndex] ?? "");
+					if (lyric === "") return;
+					setFont("normal", LYRIC_SIZE);
+					const lyricX = Math.max(centerX - 1, (lyricEnd[verse] ?? -Infinity) + 2);
+					text(lyric, lyricX, lyricY(verse));
+					lyricEnd[verse] = lyricX + doc.getTextWidth(lyric);
 				});
 				column.forEach((value, stringIndex) => {
 					const lineY = stringY(stringIndex);

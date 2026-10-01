@@ -1,28 +1,38 @@
-import { type KeyboardEvent, type RefObject, useEffect } from "react";
-import type { CellPos, Playhead, RangeSelection, Track } from "../types";
+import { type KeyboardEvent, type RefObject, useEffect, useRef, useState } from "react";
+import type { CellPos, Playhead, RangeSelection, StepLyrics, Track } from "../types";
 import { midiToNoteName } from "../lib/tunings";
 import { COLS_PER_MEASURE, chunkMeasures, stringMidi } from "../lib/instruments";
 import { globalCol, normalizeRect } from "../lib/clipboard";
 import { cellRingBars, displayCellValue } from "../lib/cellValue";
 import type { ProgressionSlot } from "../lib/progression";
 import { tieColor } from "../lib/sectionColors";
-import { strumAt } from "../lib/songOps";
+import { lyricKey, stepLyricAt, strumAt } from "../lib/songOps";
 import { strumArrows } from "../lib/strum";
 import { CloseIcon } from "./Icons";
 
 interface Props {
 	className?: string;
 	track: Track;
-	/** the arrangement, expanded — one block is drawn per slot, in play order */
+	/** one block per slot, in play order — a repeated section only its first
+	 *  pass, unless `expanded` */
 	slots: ProgressionSlot[];
+	/** every pass of a repeat drawn as its own block */
+	expanded: boolean;
 	activeSlot: number;
 	measureCount: number;
 	measureNotes: string[];
+	lyrics: StepLyrics;
+	/** the lyric column being typed into; slot is a shown-slot index */
+	lyricEdit: LyricEdit | null;
+	onEditLyric: (edit: LyricEdit | null) => void;
+	onSetLyric: (entryId: number, pass: number, offset: number, column: number, text: string) => void;
 	canDeleteSection: boolean;
 	/** milliseconds per grid column at the current tempo — paces the playhead glide */
 	stepDurationMs: number;
 	selected: RangeSelection | null;
 	playhead: Playhead | null;
+	/** which pass of a repeated block the playhead is on */
+	playheadPass: number;
 	gridRef: RefObject<HTMLDivElement | null>;
 	onCellMouseDown: (position: CellPos, slotIndex: number, shiftKey: boolean) => void;
 	onCellEnter: (position: CellPos, slotIndex: number) => void;
@@ -39,28 +49,54 @@ interface Props {
 	onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => void;
 }
 
+// Lyric widths for the push-right layout, measured in the grid's own font.
+let lyricContext: CanvasRenderingContext2D | null = null;
+function measureLyric(word: string): number {
+	if (!lyricContext) {
+		lyricContext = document.createElement("canvas").getContext("2d");
+		if (lyricContext) lyricContext.font = `13px ${getComputedStyle(document.body).fontFamily}`;
+	}
+	return lyricContext?.measureText(word).width ?? word.length * 7;
+}
+
+export interface LyricEdit {
+	slot: number;
+	/** pass of a repeated block — each pass is sung over with its own words */
+	pass: number;
+	measure: number;
+	column: number;
+}
+
 const headerBtn = "btn text-xs px-2 py-1";
 const dangerHeaderBtn = "btn btn-danger text-xs px-2 py-1";
-const CELL_W = 28;/** left margin: 40px note-name column + 6px gap + 14px opening bar */
+const CELL_W = 28;
+/** left margin: 40px note-name column + 6px gap + 14px opening bar */
 const GUTTER = 60;
 /** one measure block: its cells plus the trailing barline slot */
 const MEASURE_W = CELL_W * COLS_PER_MEASURE + 14;
 
 // The score renders the ARRANGEMENT, not the raw measure timeline: one block
-// per progression slot, so a section played three times is three blocks over
-// the same bars. Repeat counts live in the progression view; there are no
-// loop controls here.
+// per progression step, in play order. A section played three times is ONE
+// block tagged ×3 (App passes only each step's first pass) — the playhead
+// loops through it on every pass. Repeat counts live in the progression view;
+// there are no loop controls here.
 export default function TabGrid({
 	className = "",
 	track,
 	slots,
+	expanded,
 	activeSlot,
 	measureCount,
 	measureNotes,
+	lyrics,
+	lyricEdit,
+	onEditLyric,
+	onSetLyric,
 	canDeleteSection,
 	stepDurationMs,
 	selected,
 	playhead,
+	playheadPass,
 	gridRef,
 	onCellMouseDown,
 	onCellEnter,
@@ -80,6 +116,105 @@ export default function TabGrid({
 	const focus = selected?.focus ?? null;
 	// The strum row only appears once the track has a strum marked.
 	const hasStrums = track.strums?.some((row) => row.some((strum) => strum !== null)) ?? false;
+	// Lyrics belong to a place in the arrangement (progression step + pass),
+	// not to the bars: a reused or repeated section is sung with new words.
+	const hasLyrics =
+		lyricEdit !== null || Object.values(lyrics).some((rows) => rows.some((row) => row.some((text) => text !== "")));
+	const lyricOf = (slot: ProgressionSlot, pass: number, measure: number, column: number) =>
+		stepLyricAt(lyrics, slot.entryId, pass, measure - slot.startMeasure, column);
+	// A repeated block lists the passes that have words plus one blank row for
+	// the next — not a blank row for every pass of a long repeat.
+	// A long word pushes the following words right (never overprinted, never
+	// cut off), the way the exports lay lyrics out: per position on the line,
+	// how far its word is shifted past its column.
+	const lyricShifts = (slot: ProgressionSlot, pass: number, lineMeasures: number[]): number[] => {
+		const shifts: number[] = [];
+		let end = -Infinity;
+		for (let position = 0; position < lineMeasures.length * COLS_PER_MEASURE; position++) {
+			const at = Math.floor(position / COLS_PER_MEASURE);
+			const column = position % COLS_PER_MEASURE;
+			const word = lyricOf(slot, pass, lineMeasures[at], column);
+			const left = cellLeft(at, column) + 2;
+			const placed = Math.max(left, end + 5);
+			shifts.push(placed - left);
+			if (word !== "") end = placed + measureLyric(word);
+		}
+		return shifts;
+	};
+	const lyricPassesShown = (slot: ProgressionSlot): number => {
+		let shown = 1;
+		for (let pass = 0; pass < slot.repeatCount; pass++) {
+			const rows = lyrics[lyricKey(slot.entryId, pass)];
+			if (rows?.some((row) => row.some((text) => text !== ""))) shown = pass + 2;
+		}
+		if (lyricEdit?.slot === slot.index) shown = Math.max(shown, lyricEdit.pass + 1);
+		return Math.min(shown, slot.repeatCount);
+	};
+	// The draft belongs to one column; moving on starts from that column's text.
+	const keyOf = (edit: LyricEdit) => `${edit.slot}:${edit.pass}:${edit.measure}:${edit.column}`;
+	const editKey = lyricEdit ? keyOf(lyricEdit) : "";
+	const [draft, setDraft] = useState<{ key: string; text: string } | null>(null);
+	const editSlot = lyricEdit ? slots.find((slot) => slot.index === lyricEdit.slot) : undefined;
+	const lyricDraft =
+		draft?.key === editKey || !lyricEdit || !editSlot
+			? (draft?.text ?? "")
+			: lyricOf(editSlot, lyricEdit.pass, lyricEdit.measure, lyricEdit.column);
+	// An input unmounting as the edit moves on may still fire blur — only the
+	// column currently being edited may close the editor.
+	const editKeyRef = useRef(editKey);
+	editKeyRef.current = editKey;
+
+	const saveLyric = (edit: LyricEdit, text: string) => {
+		const slot = slots.find((candidate) => candidate.index === edit.slot);
+		if (slot) onSetLyric(slot.entryId, edit.pass, edit.measure - slot.startMeasure, edit.column, text);
+	};
+
+	// The next lyric column in PLAY order — through every pass of a repeated
+	// block before moving on — so Space / Tab runs straight through the song.
+	const lyricNeighbor = (edit: LyricEdit, delta: -1 | 1): LyricEdit | null => {
+		const slotPosition = slots.findIndex((slot) => slot.index === edit.slot);
+		const slot = slots[slotPosition];
+		if (!slot) return null;
+		const columns = slot.span * COLS_PER_MEASURE;
+		const at = (target: ProgressionSlot, pass: number, offset: number): LyricEdit => ({
+			slot: target.index,
+			pass,
+			measure: target.startMeasure + Math.floor(offset / COLS_PER_MEASURE),
+			column: offset % COLS_PER_MEASURE,
+		});
+		const offset = (edit.measure - slot.startMeasure) * COLS_PER_MEASURE + edit.column + delta;
+		if (offset >= 0 && offset < columns) return at(slot, edit.pass, offset);
+		const pass = edit.pass + delta;
+		if (!expanded && pass >= 0 && pass < slot.repeatCount) return at(slot, pass, delta === 1 ? 0 : columns - 1);
+		const next = slots[slotPosition + delta];
+		if (!next || next.unused) return null;
+		// Expanded, each block is one pass already.
+		if (expanded) return at(next, next.repeatIndex, delta === 1 ? 0 : next.span * COLS_PER_MEASURE - 1);
+		return delta === 1 ? at(next, 0, 0) : at(next, next.repeatCount - 1, next.span * COLS_PER_MEASURE - 1);
+	};
+
+	const lyricKeyDown = (e: KeyboardEvent<HTMLInputElement>, edit: LyricEdit) => {
+		const commit = () => saveLyric(edit, lyricDraft);
+		const move = (delta: -1 | 1) => {
+			const next = lyricNeighbor(edit, delta);
+			if (next) onEditLyric(next);
+		};
+		if ((e.key === " " || e.key === "Tab") && !e.shiftKey) {
+			e.preventDefault();
+			commit();
+			move(1);
+		} else if ((e.key === "Tab" && e.shiftKey) || (e.key === "Backspace" && lyricDraft === "")) {
+			e.preventDefault();
+			commit();
+			move(-1);
+		} else if (e.key === "Enter" || e.key === "Escape") {
+			e.preventDefault();
+			if (e.key === "Enter") commit();
+			setDraft(null);
+			onEditLyric(null);
+			gridRef.current?.focus({ preventScroll: true });
+		}
+	};
 
 	// Keep the playing line in view — matched on the slot as well as the
 	// measure, since a repeated section is on screen more than once.
@@ -234,7 +369,7 @@ export default function TabGrid({
 							</span>
 							{slot.repeatCount > 1 && (
 								<span className="text-[11px] font-mono text-ink-faint uppercase tracking-wide">
-									𝄆 {slot.repeatIndex + 1} of {slot.repeatCount}
+									{expanded ? `pass ${slot.repeatIndex + 1}/${slot.repeatCount}` : `𝄆 ×${slot.repeatCount}`}
 								</span>
 							)}
 							{slot.unused && (
@@ -260,6 +395,17 @@ export default function TabGrid({
 							>
 								+ measure
 							</button>
+							{!slot.unused && (
+							<button
+								className={headerBtn}
+								onClick={() =>
+									onEditLyric({ slot: slot.index, pass: slot.repeatIndex, measure: slot.startMeasure, column: 0 })
+								}
+								title="Type lyrics from the start of this section"
+							>
+								+ lyrics
+							</button>
+							)}
 							{canDeleteSection && (
 								<button
 									className={dangerHeaderBtn}
@@ -407,6 +553,70 @@ export default function TabGrid({
 											))}
 										</div>
 									))}
+									{hasLyrics &&
+										!slot.unused &&
+										(expanded ? [slot.repeatIndex] : Array.from({ length: lyricPassesShown(slot) }, (_, pass) => pass)).map((pass) => (
+											<div className="flex items-center" aria-label="lyrics" key={`lyrics-${pass}`}>
+												<span className="w-10 shrink-0 mr-1.5 text-right text-[11px] font-mono text-ink-faint">
+													{slot.repeatCount > 1 && !expanded ? `${pass + 1}.` : ""}
+												</span>
+												<span className="w-3.5 shrink-0" />
+												{(() => { const shifts = lyricShifts(slot, pass, lineMeasures); return lineMeasures.map((m, lineIndex) => (
+													<span className="flex items-center shrink-0" key={m}>
+														{Array.from({ length: COLS_PER_MEASURE }, (_, c) => {
+															const here: LyricEdit = { slot: slot.index, pass, measure: m, column: c };
+															const editing = lyricEdit !== null && keyOf(lyricEdit) === keyOf(here);
+															const sung =
+																playhead !== null &&
+																playhead.slot === slot.index &&
+																playheadPass === pass &&
+																playhead.measure === m &&
+																playhead.column === c;
+															return (
+																<span
+																	key={c}
+																	style={{ width: CELL_W }}
+																	className="relative h-[22px] shrink-0 cursor-text"
+																	onMouseDown={(e) => {
+																		if (editing) return;
+																		e.preventDefault();
+																		onEditLyric(here);
+																	}}
+																>
+																	{editing ? (
+																		<input
+																			autoFocus
+																			className="absolute left-0 top-0 z-20 h-[22px] min-w-full field-sizing-content bg-plate-sunken border-b border-accent outline-none text-[13px] text-ink px-0.5"
+																			value={lyricDraft}
+																			onChange={(e) => setDraft({ key: editKey, text: e.target.value })}
+																			onKeyDown={(e) => lyricKeyDown(e, here)}
+																			onBlur={() => {
+																				if (editKeyRef.current !== keyOf(here)) return;
+																				saveLyric(here, lyricDraft);
+																				setDraft(null);
+																				onEditLyric(null);
+																			}}
+																		/>
+																	) : (
+																		// words spill right over the empty columns after them
+																		<span
+																			className={
+																				"absolute top-0 leading-[22px] text-[13px] whitespace-nowrap select-none " +
+																				(sung ? "text-accent" : "text-ink-soft")
+																			}
+																			style={{ left: 2 + shifts[lineIndex * COLS_PER_MEASURE + c] }}
+																		>
+																			{lyricOf(slot, pass, m, c)}
+																		</span>
+																	)}
+																</span>
+															);
+														})}
+														<span className="w-3.5 shrink-0" />
+													</span>
+												)); })()}
+											</div>
+										))}
 									{hasStrums && (
 										<div className="flex items-center" aria-label="strums">
 											<span className="w-10 shrink-0 mr-1.5" />

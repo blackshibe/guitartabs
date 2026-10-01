@@ -32,10 +32,10 @@ describe("buildTrackPdf", () => {
 	});
 
 	it("prints the fold count over the end-repeat bar of a repeated section", () => {
-		const track = buildTrack(10, 2);
-		poke(track, 0, 0, 0, "3");
-		poke(track, 1, 0, 0, "3");
-		const file = asString(buildTrackPdf(buildSong({ measureCount: 2, tracks: [track] }), 10));
+		// 8 identical bars fold to a 1-bar unit ×8, written out to a full line ×2
+		const track = buildTrack(10, 8);
+		for (let m = 0; m < 8; m++) poke(track, m, 0, 0, "3");
+		const file = asString(buildTrackPdf(buildSong({ measureCount: 8, tracks: [track] }), 10));
 		expect(file).toContain("(\xd72) Tj");
 	});
 
@@ -85,6 +85,26 @@ describe("buildTrackPdf", () => {
 		while (pagesFor(bars + 4) === 1) bars += 4;
 		// As the section's closing line, that same line is squeezed in.
 		expect(pagesFor(bars)).toBe(1);
+	});
+
+	it("can start every section on a new line", () => {
+		// Two 2-bar sections: one line when bars flow, two when sections break.
+		const track = buildTrack(10, 4);
+		for (let m = 0; m < 4; m++) poke(track, m, 0, 0, String(m + 1));
+		const song = buildSong({
+			measureCount: 4,
+			tracks: [track],
+			sections: [
+				{ id: 1, name: "Verse", startMeasure: 0 },
+				{ id: 2, name: "Chorus", startMeasure: 2 },
+			],
+		});
+		// Section names ride the head row of their line — same y means same line.
+		const labelY = (file: string, label: string) => file.match(new RegExp(`([\\d.]+) Td\\n\\(${label}\\) Tj`))?.[1];
+		const flowing = asString(buildTrackPdf(song, 10));
+		expect(labelY(flowing, "Chorus")).toBe(labelY(flowing, "Verse"));
+		const broken = asString(buildTrackPdf(song, 10, { sectionPerLine: true }));
+		expect(Number(labelY(broken, "Chorus"))).toBeLessThan(Number(labelY(broken, "Verse")));
 	});
 
 	it("returns an empty single page for an unknown track id", () => {

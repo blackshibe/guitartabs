@@ -5,6 +5,7 @@ export const SHORTCUTS: [string, string][] = [
 	["H", "toggle harmonic ◇"],
 	["S", "sustain 1 / 2 / 4 bars"],
 	["D / U", "add strum stroke ↓ / ↑"],
+	["L", "lyric · Space / Tab next"],
 	["↑ ↓", "move string"],
 	["← → Tab", "move column"],
 	["Shift+arrows / drag", "select range"],

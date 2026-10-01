@@ -575,3 +575,46 @@ describe("strums", () => {
 		expect(strumOf(songReducer(state, { type: "clear-range", trackId: 10, rect: whole }), 0, 1)).toBeNull();
 	});
 });
+
+describe("lyrics", () => {
+	/** one 4-bar section played twice by one step, then once more by another */
+	const arranged = () =>
+		stateOf(
+			buildSong({
+				progression: [
+					{ id: 100, sectionId: 1, repeat: 2 },
+					{ id: 101, sectionId: 1, repeat: 1 },
+				],
+			}),
+		);
+	const set = (entryId: number, pass: number, offset: number, column: number, text: string) =>
+		({ type: "set-lyric", entryId, pass, offset, column, text }) as const;
+
+	it("belongs to a step and pass, not to the bars", () => {
+		const next = songReducer(arranged(), set(100, 1, 0, 3, " love "));
+		expect(next.lyrics["100:1"][0][3]).toBe("love");
+		expect(next.lyrics["100:0"]).toBeUndefined();
+		expect(next.lyrics["101:0"]).toBeUndefined();
+	});
+
+	it("rows splice with the section's measures", () => {
+		const state = songReducer(arranged(), set(101, 0, 1, 0, "la"));
+		const inserted = songReducer(state, { type: "insert-measure", after: 0 });
+		expect(inserted.lyrics["101:0"][2][0]).toBe("la");
+		const deleted = songReducer(inserted, { type: "delete-measure", measure: 1 });
+		expect(deleted.lyrics["101:0"][1][0]).toBe("la");
+	});
+
+	it("go with a removed step", () => {
+		const state = songReducer(arranged(), set(101, 0, 0, 0, "la"));
+		expect(songReducer(state, { type: "remove-entry", entryId: 101 }).lyrics["101:0"]).toBeUndefined();
+	});
+
+	it("guards", () => {
+		const state = arranged();
+		expect(songReducer(state, set(100, 0, 0, 0, ""))).toBe(state);
+		expect(songReducer(state, set(101, 1, 0, 0, "x"))).toBe(state); // no second pass
+		expect(songReducer(state, set(999, 0, 0, 0, "x"))).toBe(state);
+		expect(songReducer(state, set(100, 0, 4, 0, "x"))).toBe(state);
+	});
+});

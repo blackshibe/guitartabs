@@ -1,5 +1,6 @@
 import type {
 	CellPos,
+	StepLyrics,
 	ProgressionEntry,
 	Section,
 	SectionRange,
@@ -17,10 +18,15 @@ import { entryIndexForSection, normalizeProgression } from "./progression";
 import {
 	dedupeSections,
 	deepCopyMeasures,
+	blankLyricRow,
 	deleteMeasuresFromTrack,
 	insertBlankMeasures,
 	insertMeasuresIntoTrack,
+	lyricKey,
+	pruneStepLyrics,
 	sectionRangesFor,
+	spliceStepLyrics,
+	stepLyricAt,
 	strumAt,
 	strumRowsFor,
 	writeStrums,
@@ -37,6 +43,8 @@ export interface SongState {
 	tracks: Track[];
 	/** measureNotes[m] — free-text annotation for that measure; parallel to the shared timeline, not per-track */
 	measureNotes: string[];
+	/** words per column, keyed by progression step + pass (see StepLyrics) */
+	lyrics: StepLyrics;
 	/** bars of silence before the tab comes in; absent = 0 */
 	leadInBars?: number;
 	youtube?: YoutubeSync;
@@ -56,6 +64,8 @@ export type SongAction =
 	| { type: "clear-strums"; trackId: number; rect: Rect }
 	| { type: "paste-cells"; trackId: number; at: CellPos; clip: CellClipboard }
 	| { type: "set-measure-note"; measure: number; text: string }
+	| { type: "set-lyric"; entryId: number; pass: number; offset: number; column: number; text: string }
+	| { type: "replace-lyrics"; lyrics: StepLyrics }
 	| { type: "insert-measure"; after: number }
 	| { type: "delete-measure"; measure: number }
 	| { type: "add-section-at"; measure: number }
@@ -128,15 +138,29 @@ function spliceNotes(notes: string[], at: number, insert: string[]): string[] {
 }
 
 // Insert `count` blank measures at `at` in every track and shift markers.
+// Every progression step that plays the section owning measure m, and m's
+// offset into it — lyric rows are spliced per step.
+function stepsPlaying(state: SongState, ranges: SectionRange[], m: number): { entryIds: Set<number>; offset: number } {
+	const range = ranges.find((r) => m >= r.startMeasure && m <= r.endMeasure);
+	if (!range) return { entryIds: new Set(), offset: 0 };
+	const entryIds = new Set(state.progression.filter((e) => e.sectionId === range.id).map((e) => e.id));
+	return { entryIds, offset: m - range.startMeasure };
+}
+
+// Insert `count` blank measures at `at` in every track and shift markers.
 function insertBlankAt(state: SongState, at: number, count: number): SongState {
+	const sections = state.sections.map((s) =>
+		s.startMeasure >= at ? { ...s, startMeasure: s.startMeasure + count } : s,
+	);
+	const measureCount = state.measureCount + count;
+	const { entryIds, offset } = stepsPlaying(state, sectionRangesFor(sections, measureCount), at);
 	return {
 		...state,
 		tracks: state.tracks.map((t) => insertBlankMeasures(t, at, count)),
-		measureCount: state.measureCount + count,
+		measureCount,
 		measureNotes: spliceNotes(state.measureNotes, at, Array(count).fill("")),
-		sections: state.sections.map((s) =>
-			s.startMeasure >= at ? { ...s, startMeasure: s.startMeasure + count } : s,
-		),
+		lyrics: spliceStepLyrics(state.lyrics, entryIds, offset, count, 0),
+		sections,
 	};
 }
 
@@ -333,6 +357,25 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 			return { ...state, measureNotes: notes };
 		}
 
+		case "set-lyric": {
+			const { entryId, pass, offset, column } = action;
+			const entry = state.progression.find((e) => e.id === entryId);
+			const range = entry && rangesOf(state).find((r) => r.id === entry.sectionId);
+			if (!entry || !range || pass < 0 || pass >= entry.repeat) return state;
+			if (offset < 0 || offset > range.endMeasure - range.startMeasure) return state;
+			if (column < 0 || column >= COLS_PER_MEASURE) return state;
+			const text = action.text.trim();
+			if (stepLyricAt(state.lyrics, entryId, pass, offset, column) === text) return state;
+			const key = lyricKey(entryId, pass);
+			const rows = (state.lyrics[key] ?? []).map((row) => row.slice());
+			while (rows.length <= offset) rows.push(blankLyricRow());
+			rows[offset][column] = text;
+			return { ...state, lyrics: { ...state.lyrics, [key]: rows } };
+		}
+
+		case "replace-lyrics":
+			return { ...state, lyrics: action.lyrics };
+
 		case "insert-measure": {
 			const at = action.after + 1;
 			return insertBlankAt(state, at, 1);
@@ -357,6 +400,10 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 				tracks: state.tracks.map((t) => deleteMeasuresFromTrack(t, new Set([m]))),
 				measureCount: newCount,
 				measureNotes: state.measureNotes.filter((_, i) => i !== m),
+				lyrics: (() => {
+					const { entryIds, offset } = stepsPlaying(state, rangesOf(state), m);
+					return spliceStepLyrics(state.lyrics, entryIds, offset, 0, 1);
+				})(),
 				sections: cleaned,
 				// A collapsed duplicate section takes its arrangement steps with it.
 				progression: normalizeProgression(state.progression, cleaned),
@@ -429,13 +476,15 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 				.map((s) => (s.startMeasure > range.endMeasure ? { ...s, startMeasure: s.startMeasure - span } : s))
 				.sort((a, b) => a.startMeasure - b.startMeasure);
 			if (next[0].startMeasure !== 0) next[0] = { ...next[0], startMeasure: 0 };
+			const progression = normalizeProgression(state.progression, next);
 			return {
 				...state,
 				tracks: state.tracks.map((t) => deleteMeasuresFromTrack(t, drop)),
 				measureCount: state.measureCount - span,
 				measureNotes: state.measureNotes.filter((_, i) => !drop.has(i)),
 				sections: next,
-				progression: normalizeProgression(state.progression, next),
+				progression,
+				lyrics: pruneStepLyrics(state.lyrics, new Set(progression.map((e) => e.id))),
 			};
 		}
 
@@ -495,7 +544,12 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 			// The last step can't go — an empty arrangement would render nothing.
 			if (state.progression.length <= 1) return state;
 			if (!state.progression.some((e) => e.id === action.entryId)) return state;
-			return { ...state, progression: state.progression.filter((e) => e.id !== action.entryId) };
+			const progression = state.progression.filter((e) => e.id !== action.entryId);
+			return {
+				...state,
+				progression,
+				lyrics: pruneStepLyrics(state.lyrics, new Set(progression.map((e) => e.id))),
+			};
 		}
 
 		case "move-entry": {
@@ -632,6 +686,8 @@ export function songReducer(state: SongState, action: SongAction): SongState {
 				progression: normalizeProgression(song.progression, song.sections),
 				tracks: song.tracks,
 				measureNotes: song.measureNotes ?? [],
+				// an array is the short-lived per-measure shape; storage migrates it
+				lyrics: song.lyrics && !Array.isArray(song.lyrics) ? song.lyrics : {},
 				leadInBars: song.leadInBars,
 				youtube: song.youtube,
 				stems: song.stems ?? [],
@@ -668,6 +724,8 @@ function coalesceKey(action: SongAction): string | null {
 			return `cell:${action.trackId}:${action.measure}:${action.column}:${action.stringIndex}`;
 		case "set-measure-note":
 			return `measure-note:${action.measure}`;
+		case "set-lyric":
+			return `lyric:${action.entryId}:${action.pass}:${action.offset}:${action.column}`;
 		case "rename-section":
 			return `sec-name:${action.id}`;
 		case "set-section-comment":

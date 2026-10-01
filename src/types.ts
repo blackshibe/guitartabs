@@ -30,6 +30,14 @@ export type Strum = string;
 /** strums[m][c] for one measure's columns; null = unmarked. */
 export type StrumRow = (Strum | null)[];
 
+/** One measure's lyric columns; "" = no lyric. */
+export type LyricRow = string[];
+
+/** Lyrics keyed by WHERE they are sung — `${entryId}:${pass}` (a progression
+ *  step and a pass of its repeat) → rows by measure offset into that step's
+ *  section. Not by source measure: a reused or repeated section gets new words. */
+export type StepLyrics = Record<string, LyricRow[]>;
+
 export interface Track {
 	id: number;
 	name: string;
@@ -106,6 +114,9 @@ export interface Song {
 	stems?: SongStem[];
 	/** measureNotes[m] — free-text annotation for that measure, shared across tracks; parallel to measureCount */
 	measureNotes?: string[];
+	/** words sung per column, shared across tracks, placed on the arrangement
+	 *  (see StepLyrics); rows lazily grown — shorter/absent = blank */
+	lyrics?: StepLyrics;
 	/** bars of silence before the tab comes in — pure playback timing, no measures behind it; absent = 0 */
 	leadInBars?: number;
 	youtube?: YoutubeSync;

@@ -7,8 +7,10 @@ import {
 	normalizeProgression,
 	playableSteps,
 	secondsAtStep,
+	shownSlotIndex,
 	soundingCellsAt,
 	stepOf,
+	stepThroughShown,
 } from "../progression";
 import { buildTrack, poke } from "./helpers";
 import { COLS_PER_MEASURE } from "../instruments";
@@ -165,5 +167,49 @@ describe("soundingCellsAt", () => {
 		expect(soundingCellsAt(slots, track, 16)).toEqual(["7", null]);
 		// nothing played before the very first column — it stays silent
 		expect(soundingCellsAt(slots, track, 0)).toEqual([null, null]);
+	});
+});
+
+describe("the grid draws a repeated section once", () => {
+	const ranges = sectionRangesFor(
+		[
+			{ id: 1, name: "A", startMeasure: 0 },
+			{ id: 2, name: "B", startMeasure: 1 },
+		],
+		2,
+	);
+	// A ×3 then B: steps 0–23 are A's three passes, 24–31 are B.
+	const slots = buildSlots(ranges, [
+		{ id: 90, sectionId: 1, repeat: 3 },
+		{ id: 91, sectionId: 2, repeat: 1 },
+	]);
+
+	it("maps every pass to the first pass's slot", () => {
+		expect([0, 1, 2, 3].map((index) => shownSlotIndex(slots, index))).toEqual([0, 0, 0, 3]);
+	});
+
+	it("steps off the end of a repeat to what follows its last pass, and back to its first", () => {
+		const forward = stepThroughShown(slots, 7, 1);
+		expect(forward?.slot.section.id).toBe(2);
+		expect(forward?.column).toBe(0);
+		const back = stepThroughShown(slots, 24, -1);
+		expect(back?.slot.index).toBe(0);
+		expect([back?.measure, back?.column]).toEqual([0, 7]);
+		expect(stepThroughShown(slots, 3, 1)?.slot.index).toBe(0);
+	});
+});
+
+describe("lyrics between songs", () => {
+	it("move bar for bar along the played timeline, whatever the step ids", async () => {
+		const { lyricsAlongTimeline, lyricsOntoTimeline } = await import("../progression");
+		const { buildSong } = await import("./helpers");
+		const row = ["hey", "", "", "", "", "", "", ""];
+		const source = buildSong({
+			measureCount: 1,
+			progression: [{ id: 100, sectionId: 1, repeat: 2 }],
+			lyrics: { "100:1": [row] },
+		});
+		const target = buildSong({ measureCount: 2, progression: [{ id: 7, sectionId: 1, repeat: 1 }] });
+		expect(lyricsOntoTimeline(target, lyricsAlongTimeline(source))).toEqual({ "7:0": [Array(8).fill(""), row] });
 	});
 });

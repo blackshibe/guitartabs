@@ -2,7 +2,7 @@ import { useEffect, type Dispatch, type KeyboardEvent, type SetStateAction } fro
 import type { CellPos, RangeSelection, Track } from "../types";
 import { normalizeRect } from "../lib/clipboard";
 import { cycleRing, toggleHarmonic, typeDigit } from "../lib/cellValue";
-import { locateStep, slotForMeasure, stepOf, type ProgressionSlot } from "../lib/progression";
+import { locateStep, slotForMeasure, stepOf, stepThroughShown, type ProgressionSlot } from "../lib/progression";
 import type { SongAction } from "../lib/songReducer";
 import { strumAt } from "../lib/songOps";
 import { addStroke } from "../lib/strum";
@@ -10,6 +10,8 @@ import { addStroke } from "../lib/strum";
 interface UseGridEditingArguments {
 	activeTrack: Track | undefined;
 	slots: ProgressionSlot[];
+	/** every pass of a repeat is on screen — walk them all */
+	expanded: boolean;
 	activeSlot: number;
 	setActiveSlot: Dispatch<SetStateAction<number>>;
 	selection: RangeSelection | null;
@@ -21,18 +23,20 @@ interface UseGridEditingArguments {
 	copySelection: () => void;
 	cutSelection: () => void;
 	pasteAtSelection: () => Promise<void>;
+	editLyric: (measure: number, column: number) => void;
 }
 
 // Keyboard-first grid editing: digit entry, navigation, clipboard shortcuts,
 // space-to-play — plus the window-level undo/redo listener.
 //
-// Horizontal navigation walks the EXPANDED timeline (the progression's slot
-// list), not the raw measure order, so moving right off the end of a section
-// lands in whatever the arrangement plays next — including the next pass of a
-// section that repeats.
+// Horizontal navigation walks the arrangement (the progression's slot list),
+// not the raw measure order, so moving right off the end of a section lands in
+// whatever the arrangement plays next. A repeated section is drawn once, so
+// its later passes are skipped (`stepThroughShown`).
 export function useGridEditing({
 	activeTrack,
 	slots,
+	expanded,
 	activeSlot,
 	setActiveSlot,
 	selection,
@@ -44,6 +48,7 @@ export function useGridEditing({
 	copySelection,
 	cutSelection,
 	pasteAtSelection,
+	editLyric,
 }: UseGridEditingArguments) {
 	// Undo/redo work everywhere except while typing in a text field.
 	useEffect(() => {
@@ -117,9 +122,11 @@ export function useGridEditing({
 			);
 		};
 
-		const stepBy = (delta: number, extend: boolean): boolean => {
+		const stepBy = (delta: -1 | 1, extend: boolean): boolean => {
 			if (!currentSlot) return false;
-			const at = locateStep(slots, stepOf(currentSlot, focus.measure, focus.column) + delta);
+			// Walks the grid as drawn — a repeated section is on screen once.
+			const step = stepOf(currentSlot, focus.measure, focus.column);
+			const at = expanded ? locateStep(slots, step + delta) : stepThroughShown(slots, step, delta);
 			if (!at) return false;
 			setActiveSlot(at.slot.index);
 			setFocus({ measure: at.measure, column: at.column, stringIndex: focus.stringIndex }, extend);
@@ -158,6 +165,13 @@ export function useGridEditing({
 			event.preventDefault();
 			const current = currentValue();
 			if (current !== null && current !== "") editFocus(cycleRing(current));
+			return;
+		}
+
+		// L types the lyric sung on the focused column.
+		if (event.key === "l" || event.key === "L") {
+			event.preventDefault();
+			editLyric(focus.measure, focus.column);
 			return;
 		}
 

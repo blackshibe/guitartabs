@@ -1,9 +1,9 @@
-import type { ProgressionEntry, SectionRange, Song, Strum, Track } from "../types";
-import { COLS_PER_MEASURE, chunkMeasures, stringMidi } from "./instruments";
+import type { LyricRow, ProgressionEntry, SectionRange, Song, Strum, Track } from "../types";
+import { COLS_PER_MEASURE, MEASURES_PER_LINE, chunkMeasures, stringMidi } from "./instruments";
 import { midiToNoteName } from "./tunings";
 import { cellRingBars, exportCellLabel } from "./cellValue";
 import { strumLetters } from "./strum";
-import { measureIsEmpty, measuresEqual, sectionRangesFor, strumAt } from "./songOps";
+import { measureIsEmpty, measuresEqual, sectionRangesFor, stepLyricRow, strumAt } from "./songOps";
 
 function measureStrums(track: Track, m: number): (Strum | null)[] {
 	return Array.from({ length: COLS_PER_MEASURE }, (_, c) => strumAt(track, m, c));
@@ -62,16 +62,26 @@ export function ringFill(track: Track, measureIndices: number[]): boolean[][] {
 	});
 }
 
-function stringsLines(track: Track, measureIndices: number[]): string[] {
+function stringsLines(track: Track, measureIndices: number[], verses: LyricRow[][]): string[] {
 	const fill = ringFill(track, measureIndices);
 	const out: string[] = [];
-	chunkMeasures(measureIndices).forEach((lineMeasures) => {
-		const base = measureIndices.indexOf(lineMeasures[0]) * COLS_PER_MEASURE;
+	// Positions count printed lines, not measure ids — a written-out repeat
+	// lists the same measure more than once.
+	chunkMeasures(measureIndices).forEach((lineMeasures, lineNumber) => {
+		const base = lineNumber * MEASURES_PER_LINE * COLS_PER_MEASURE;
 		const lines = track.tuning.map((str) => midiToNoteName(stringMidi(str)).padEnd(2, " ") + "|");
 		// Strum marks print on their own line under the strings, D / U under
 		// their column ("DU" for a split column, which widens it to fit).
 		const strummed = lineMeasures.some((m) => measureStrums(track, m).some((strum) => strum !== null));
 		let strumLine = "   ";
+		// Lyrics print under that, one line per verse sung over these bars,
+		// each word starting at its column and spilling right — pushed along
+		// when the previous word runs long.
+		const firstPrinted = lineNumber * MEASURES_PER_LINE;
+		const lineVerses = verses
+			.map((rows) => rows.slice(firstPrinted, firstPrinted + lineMeasures.length))
+			.filter((rows) => rows.some((row) => row.some((text) => text !== "")));
+		const lyricLines = lineVerses.map(() => "");
 		lineMeasures.forEach((m, lineIndex) => {
 			const measure = track.measures[m];
 			if (!measure) return;
@@ -81,6 +91,13 @@ function stringsLines(track: Track, measureIndices: number[]): string[] {
 				// 2-digit fret doesn't stretch every other column.
 				const strum = strumLetters(strumAt(track, m, ci));
 				const width = Math.max(strum.length, ...col.map((value) => (exportCellLabel(value) ?? "-").length)) + 1;
+				const at = lines[0].length + (ci === 0 ? 1 : 0);
+				lineVerses.forEach((rows, verse) => {
+					const word = rows[lineIndex]?.[ci] ?? "";
+					if (word === "") return;
+					const sung = lyricLines[verse];
+					lyricLines[verse] = sung.padEnd(sung === "" ? at : Math.max(at, sung.length + 1), " ") + word;
+				});
 				col.forEach((value, s) => {
 					const ringing = cellRingBars(value) > 0 || fill[s]?.[position] === true;
 					const label = exportCellLabel(value) ?? (ringing ? "~" : "-");
@@ -93,6 +110,7 @@ function stringsLines(track: Track, measureIndices: number[]): string[] {
 		});
 		out.push(...lines);
 		if (strummed) out.push(strumLine.trimEnd());
+		out.push(...lyricLines);
 		out.push("");
 	});
 	return out;
@@ -106,6 +124,7 @@ function trackSectionEmpty(track: Track, measureIndices: number[]): boolean {
 }
 
 interface ArrangementStep {
+	entryId: number;
 	section: SectionRange;
 	repeat: number;
 }
@@ -116,7 +135,7 @@ function arrangementSteps(song: Song): ArrangementStep[] {
 	const entries: ProgressionEntry[] =
 		song.progression ?? ranges.map((range) => ({ id: range.id, sectionId: range.id, repeat: 1 }));
 	return entries
-		.map((entry) => ({ section: byId.get(entry.sectionId), repeat: Math.max(1, entry.repeat) }))
+		.map((entry) => ({ entryId: entry.id, section: byId.get(entry.sectionId), repeat: Math.max(1, entry.repeat) }))
 		.filter((step): step is ArrangementStep => step.section !== undefined);
 }
 
@@ -129,6 +148,12 @@ export interface TrackSheetSection {
 	/** 0-based played bar this block starts on — counts every repeat, and the
 	 *  bars of sections skipped as empty for this track */
 	startBar: number;
+	/** verses[v][j] — lyric row sung over printed measure j on the block's
+	 *  v-th printed pass; only passes with words in them */
+	verses: LyricRow[][];
+	/** a later run of the same section (written out for different lyrics) —
+	 *  its name is not printed again */
+	continues: boolean;
 }
 
 // The shared arrangement fold both exports draw from: consecutive steps with
@@ -141,9 +166,11 @@ export function trackSheetSections(song: Song, track: Track): TrackSheetSection[
 	let i = 0;
 	while (i < steps.length) {
 		const sec = steps[i].section;
+		const group = [steps[i]];
 		let groupCount = steps[i].repeat;
 		i += 1;
 		while (i < steps.length && sectionsEqualFor(track, sec, steps[i].section)) {
+			group.push(steps[i]);
 			groupCount += steps[i].repeat;
 			i += 1;
 		}
@@ -159,7 +186,55 @@ export function trackSheetSections(song: Song, track: Track): TrackSheetSection[
 		const comments = [sec.trackComments?.[track.id]]
 			.filter((text): text is string => !!text)
 			.flatMap((text) => text.split("\n"));
-		out.push({ name: sec.name, repeats: groupCount * times, comments, measureIndices, startBar });
+		// A short repeated unit never shrinks below a line: it's written out as
+		// many times as fit on one and divide the play count — a 2-bar riff ×8
+		// prints as 4 bars ×4, and a section that is one 2-bar riff twice stays
+		// its 4 bars as written.
+		const repeats = groupCount * times;
+		let passes = 1;
+		for (let candidate = Math.floor(MEASURES_PER_LINE / measureIndices.length); candidate > 1; candidate--) {
+			if (repeats % candidate === 0) {
+				passes = candidate;
+				break;
+			}
+		}
+		// Folding merged every played pass into one printed block, so the
+		// words of each pass come back as stacked verses: unit play u is the
+		// (step, pass, unit-within-section) triple in play order.
+		const unitPlays = group.flatMap((step) =>
+			Array.from({ length: step.repeat * times }, (_, index) => ({
+				entryId: step.entryId,
+				pass: Math.floor(index / times),
+				unitIndex: index % times,
+			})),
+		);
+		const printedLength = passes * unit;
+		const renditions = Array.from({ length: repeats / passes }, (_, rendition) =>
+			Array.from({ length: printedLength }, (_, j) => {
+				const play = unitPlays[rendition * passes + Math.floor(j / unit)];
+				return stepLyricRow(song.lyrics, play.entryId, play.pass, play.unitIndex * unit + (j % unit));
+			}),
+		);
+		// A repeat sign only covers passes sung with the same words — passes
+		// with different lyrics are written out, each under its own words.
+		const printedMeasures = Array.from({ length: passes }, () => measureIndices).flat();
+		let run = 0;
+		while (run < renditions.length) {
+			const words = JSON.stringify(renditions[run]);
+			let end = run + 1;
+			while (end < renditions.length && JSON.stringify(renditions[end]) === words) end += 1;
+			const sung = renditions[run].some((row) => row.some((text) => text !== ""));
+			out.push({
+				name: sec.name,
+				verses: sung ? [renditions[run]] : [],
+				repeats: end - run,
+				comments: run === 0 ? comments : [],
+				continues: run > 0,
+				measureIndices: printedMeasures,
+				startBar: startBar + run * printedLength,
+			});
+			run = end;
+		}
 	}
 	return out;
 }
@@ -167,9 +242,10 @@ export function trackSheetSections(song: Song, track: Track): TrackSheetSection[
 function trackLines(song: Song, track: Track): string[] {
 	const parts: string[] = [];
 	trackSheetSections(song, track).forEach((block) => {
-		parts.push(`== ${block.name}${block.repeats > 1 ? ` x${block.repeats}` : ""} ==`);
+		if (!block.continues) parts.push(`== ${block.name}${block.repeats > 1 ? ` x${block.repeats}` : ""} ==`);
+		else if (block.repeats > 1) parts.push(`x${block.repeats}`);
 		parts.push(...block.comments.map((line) => `# ${line}`));
-		parts.push(...stringsLines(track, block.measureIndices));
+		parts.push(...stringsLines(track, block.measureIndices, block.verses));
 	});
 	return parts;
 }

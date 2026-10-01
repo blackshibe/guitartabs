@@ -1,10 +1,13 @@
 import { useState } from "react";
+import type { PdfOptions } from "../lib/pdf";
+
+const SECTION_LINES_KEY = "tab-editor:pdf-section-lines";
 
 interface Props {
 	tracks: { id: number; name: string }[];
 	buildText: (trackIds: number[]) => string;
 	onExportText: (trackIds: number[]) => void;
-	onExportPdf: (trackIds: number[]) => void;
+	onExportPdf: (trackIds: number[], options: PdfOptions) => void;
 }
 
 type Format = "txt" | "pdf";
@@ -15,6 +18,23 @@ export default function ExportPanel({ tracks, buildText, onExportText, onExportP
 	// Excluded ids rather than included, so a newly added track is selected by default.
 	const [excluded, setExcluded] = useState<Set<number>>(new Set());
 	const [status, setStatus] = useState("");
+	// Remembered per browser — a layout preference, not part of the song.
+	const [sectionPerLine, setSectionPerLine] = useState(() => {
+		try {
+			return localStorage.getItem(SECTION_LINES_KEY) === "1";
+		} catch {
+			return false;
+		}
+	});
+
+	const toggleSectionPerLine = (checked: boolean) => {
+		setSectionPerLine(checked);
+		try {
+			localStorage.setItem(SECTION_LINES_KEY, checked ? "1" : "0");
+		} catch {
+			// storage unavailable — the choice still holds for this session
+		}
+	};
 
 	const selectedIds = tracks.filter((track) => !excluded.has(track.id)).map((track) => track.id);
 
@@ -39,7 +59,7 @@ export default function ExportPanel({ tracks, buildText, onExportText, onExportP
 
 	const download = () => {
 		if (format === "txt") onExportText(selectedIds);
-		else onExportPdf(selectedIds);
+		else onExportPdf(selectedIds, { sectionPerLine });
 		setOpen(false);
 	};
 
@@ -96,6 +116,18 @@ export default function ExportPanel({ tracks, buildText, onExportText, onExportP
 							{formatButton("pdf", "PDF")}
 							{formatButton("txt", "Text")}
 						</div>
+
+						{format === "pdf" && (
+							<label className="flex items-center gap-2.5 px-1 mb-5 cursor-pointer text-sm text-ink-soft hover:text-ink">
+								<input
+									type="checkbox"
+									className="accent-accent"
+									checked={sectionPerLine}
+									onChange={(event) => toggleSectionPerLine(event.target.checked)}
+								/>
+								Each section on a new line
+							</label>
+						)}
 
 						<div className="flex items-center gap-2">
 							<button

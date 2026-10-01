@@ -1,5 +1,5 @@
-import type { Column, ProgressionEntry, Section, SectionRange, Track } from "../types";
-import { strumAt } from "./songOps";
+import type { Column, LyricRow, ProgressionEntry, Section, SectionRange, Song, StepLyrics, Track } from "../types";
+import { lyricKey, sectionRangesFor, stepLyricRow, strumAt } from "./songOps";
 import { COLS_PER_MEASURE, nextId } from "./instruments";
 
 // The arrangement layer. Sections are modules defined once on the measure
@@ -191,4 +191,55 @@ export function soundingCellsAt(slots: ProgressionSlot[], track: Track, step: nu
 		if (columnHasNotes(cells)) return cells;
 	}
 	return own;
+}
+
+// The grid draws a repeated section ONCE (its first pass) — every pass is the
+// same bars. These map the expanded, played timeline onto that view.
+
+/** The slot the grid draws for `index`: a later pass maps to its first pass. */
+export function shownSlotIndex(slots: ProgressionSlot[], index: number): number {
+	const slot = slots[index];
+	return slot ? index - slot.repeatIndex : index;
+}
+
+/** Move one step through the grid as drawn: stepping off the end of a
+ *  repeated section goes to what follows its LAST pass, stepping back into
+ *  one lands at the end of its first. */
+export function stepThroughShown(slots: ProgressionSlot[], step: number, delta: -1 | 1): StepLocation | null {
+	const target = locateStep(slots, step + delta);
+	if (!target || target.slot.repeatIndex === 0) return target;
+	const passSteps = target.slot.span * COLS_PER_MEASURE;
+	const skip =
+		delta > 0 ? (target.slot.repeatCount - target.slot.repeatIndex) * passSteps : -target.slot.repeatIndex * passSteps;
+	return locateStep(slots, step + delta + skip);
+}
+
+// Lyrics laid along the PLAYED timeline, one row per played bar — the shape
+// they move between songs in, since step ids differ from song to song.
+function playedBars(song: Song): { entryId: number; pass: number; offset: number }[] {
+	const ranges = sectionRangesFor(song.sections, song.measureCount);
+	return buildSlots(ranges, normalizeProgression(song.progression, song.sections))
+		.filter((slot) => !slot.unused)
+		.flatMap((slot) =>
+			Array.from({ length: slot.span }, (_, offset) => ({ entryId: slot.entryId, pass: slot.repeatIndex, offset })),
+		);
+}
+
+export function lyricsAlongTimeline(song: Song): LyricRow[] {
+	return playedBars(song).map((bar) => stepLyricRow(song.lyrics, bar.entryId, bar.pass, bar.offset));
+}
+
+/** Lay played-bar lyric rows onto a song's arrangement, bar for bar; rows
+ *  past its last played bar are dropped. */
+export function lyricsOntoTimeline(song: Song, rows: LyricRow[]): StepLyrics {
+	const lyrics: StepLyrics = {};
+	playedBars(song).forEach((bar, index) => {
+		const row = rows[index];
+		if (!row?.some((text) => text !== "")) return;
+		const key = lyricKey(bar.entryId, bar.pass);
+		const target = (lyrics[key] ??= []);
+		while (target.length < bar.offset) target.push(Array(COLS_PER_MEASURE).fill(""));
+		target[bar.offset] = row.slice();
+	});
+	return lyrics;
 }

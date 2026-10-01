@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import type { PdfOptions } from "./lib/pdf";
 import { COLS_PER_MEASURE, advanceIdCounter, defaultTuning, makeTrack, nextId } from "./lib/instruments";
 import { decodeAudio, setStemVolume } from "./lib/audio";
 import { sectionRangesFor } from "./lib/songOps";
 import { buildExportText } from "./lib/exportText";
 import { downloadFile } from "./lib/download";
-import { buildSlots, playableSteps, slotForMeasure, stepOf } from "./lib/progression";
+import { buildSlots, playableSteps, shownSlotIndex, slotForMeasure, stepOf } from "./lib/progression";
 import { historyReducer, initHistory } from "./lib/songReducer";
 import type { Song } from "./types";
 import { useToast } from "./hooks/useToast";
@@ -15,7 +16,7 @@ import { useGridEditing } from "./hooks/useGridEditing";
 import { useSongLibrary } from "./hooks/useSongLibrary";
 import TrackTabs from "./components/TrackTabs";
 import ProgressionStrip from "./components/ProgressionStrip";
-import TabGrid from "./components/TabGrid";
+import TabGrid, { type LyricEdit } from "./components/TabGrid";
 import ProgressionView from "./components/ProgressionView";
 import TuningEditor from "./components/TuningEditor";
 import SongSidebar from "./components/SongSidebar";
@@ -56,12 +57,39 @@ export default function App() {
 	const [activeTrackId, setActiveTrackId] = useState<number>(initialSong.tracks[0]?.id);
 	const [tuningEditorTrackId, setTuningEditorTrackId] = useState<number | null>(null);
 	const [view, setView] = useState<"tab" | "progression">("tab");
+	const [lyricEdit, setLyricEdit] = useState<LyricEdit | null>(null);
+	// Draw every pass of a repeat as its own block instead of one block ×N.
+	const [expandRepeats, setExpandRepeats] = useState<boolean>(() => {
+		try {
+			return localStorage.getItem("tab-editor:expand-repeats") === "1";
+		} catch {
+			return false;
+		}
+	});
+	const toggleExpandRepeats = () => {
+		setExpandRepeats((current) => {
+			try {
+				localStorage.setItem("tab-editor:expand-repeats", current ? "0" : "1");
+			} catch {
+				// remembered only when storage allows
+			}
+			return !current;
+		});
+		setLyricEdit(null);
+	};
 	const [showWelcome, setShowWelcome] = useState<boolean>(() => localStorage.getItem("tab-editor:welcomed") == null);
 	const youtubePlayerRef = useRef<YoutubeSyncHandle | null>(null);
 
 	const activeTrack = tracks.find((track) => track.id === activeTrackId) ?? tracks[0];
 	const sectionRanges = useMemo(() => sectionRangesFor(sections, measureCount), [sections, measureCount]);
 	const slots = useMemo(() => buildSlots(sectionRanges, progression), [sectionRanges, progression]);
+	// The grid draws each repeated section once — its first pass; later passes
+	// are the same bars.
+	const shownSlots = useMemo(
+		() => (expandRepeats ? slots : slots.filter((slot) => slot.repeatIndex === 0)),
+		[slots, expandRepeats],
+	);
+	const shownIndex = (index: number) => (expandRepeats ? index : shownSlotIndex(slots, index));
 
 	const { toastMessage, showToast } = useToast();
 	const { isPlaying, playhead, startPlayback, stopPlayback } = usePlayback(song, slots, youtubePlayerRef);
@@ -72,6 +100,7 @@ export default function App() {
 	const { handleGridKeyDown } = useGridEditing({
 		activeTrack,
 		slots,
+		expanded: expandRepeats,
 		activeSlot,
 		setActiveSlot,
 		selection,
@@ -83,6 +112,13 @@ export default function App() {
 		copySelection,
 		cutSelection,
 		pasteAtSelection,
+		editLyric: (measure, column) =>
+			setLyricEdit({
+				slot: shownIndex(activeSlot),
+				pass: slots[activeSlot]?.repeatIndex ?? 0,
+				measure,
+				column,
+			}),
 	});
 
 	const applySong = (nextSong: Song) => {
@@ -100,9 +136,16 @@ export default function App() {
 		setSelection(null);
 		setActiveSlot(0);
 		setTuningEditorTrackId(null);
+		setLyricEdit(null);
 	};
 
-	const library = useSongLibrary({ song, applySong, showToast });
+	const library = useSongLibrary({
+		song,
+		applySong,
+		replaceLyrics: (lyrics) => dispatch({ type: "replace-lyrics", lyrics }),
+		showToast,
+	});
+
 
 	useEffect(() => {
 		const maxId = Math.max(
@@ -242,13 +285,13 @@ export default function App() {
 		downloadFile(buildTracksText(trackIds), `${exportFileName("")}.txt`, "text/plain");
 	};
 
-	const exportTracksPdf = async (trackIds: number[]) => {
+	const exportTracksPdf = async (trackIds: number[], options: PdfOptions) => {
 		// Lazy import keeps jsPDF out of the main bundle until an export happens.
 		const { buildTrackPdf } = await import("./lib/pdf");
 		for (const trackId of trackIds) {
 			const track = song.tracks.find((candidate) => candidate.id === trackId);
 			if (!track) continue;
-			downloadFile(buildTrackPdf(song, trackId), `${exportFileName(` - ${track.name}`)}.pdf`, "application/pdf");
+			downloadFile(buildTrackPdf(song, trackId, options), `${exportFileName(` - ${track.name}`)}.pdf`, "application/pdf");
 		}
 	};
 
@@ -272,6 +315,11 @@ export default function App() {
 	}, [playhead, selection, slots, activeSlot]);
 
 	const currentSlot = playhead ? slots[playhead.slot] : selection ? slots[activeSlot] : undefined;
+	// Every pass of a repeat plays on the one block the grid draws for it.
+	const shownPlayhead = useMemo(
+		() => (playhead ? { ...playhead, slot: expandRepeats ? playhead.slot : shownSlotIndex(slots, playhead.slot) } : null),
+		[playhead, slots, expandRepeats],
+	);
 	const activeEntryId = playhead ? (slots[playhead.slot]?.entryId ?? null) : null;
 
 	const totalSteps = playableSteps(slots);
@@ -342,6 +390,20 @@ export default function App() {
 						<div className="flex shrink-0 items-center gap-1 pt-1">
 							{viewTab("tab", "Tab")}
 							{viewTab("progression", "Progression")}
+							{view === "tab" && (
+								<button
+									className={
+										"ml-2 text-xs px-3 py-1.5 border-b-2 transition-colors " +
+										(expandRepeats
+											? "bg-plate-sunken border-b-accent text-ink"
+											: "bg-plate-raised border-b-hairline-strong text-ink-soft hover:text-ink")
+									}
+									onClick={toggleExpandRepeats}
+									title="Draw every pass of a repeat as its own block"
+								>
+									Expand repeats
+								</button>
+							)}
 							<div className="ml-3 border-l border-hairline pl-3">
 								<ExportPanel
 									tracks={song.tracks.map((track) => ({ id: track.id, name: track.name }))}
@@ -378,14 +440,22 @@ export default function App() {
 						<TabGrid
 							className="mt-4"
 							track={activeTrack}
-							slots={slots}
-							activeSlot={activeSlot}
+							slots={shownSlots}
+							expanded={expandRepeats}
+							activeSlot={shownIndex(activeSlot)}
 							measureCount={measureCount}
 							measureNotes={measureNotes}
+							lyrics={song.lyrics}
+							lyricEdit={lyricEdit}
+							onEditLyric={setLyricEdit}
+							onSetLyric={(entryId, pass, offset, column, text) =>
+								dispatch({ type: "set-lyric", entryId, pass, offset, column, text })
+							}
 							canDeleteSection={sections.length > 1}
 							stepDurationMs={(60 / (currentSlot?.section.bpm ?? bpm) / 2) * 1000}
 							selected={selection}
-							playhead={playhead}
+							playhead={shownPlayhead}
+							playheadPass={playhead ? (slots[playhead.slot]?.repeatIndex ?? 0) : 0}
 							gridRef={gridRef}
 							onCellMouseDown={(position, slotIndex, shiftKey) => {
 								handleCellMouseDown(position, slotIndex, shiftKey);

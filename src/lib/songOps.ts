@@ -1,4 +1,4 @@
-import type { Measure, Section, SectionRange, Strum, StrumRow, Track } from "../types";
+import type { LyricRow, Measure, Section, StepLyrics, SectionRange, Strum, StrumRow, Track } from "../types";
 import { COLS_PER_MEASURE, makeMeasures } from "./instruments";
 
 export function sectionRangesFor(sections: Section[], measureCount: number): SectionRange[] {
@@ -84,4 +84,61 @@ export function measuresEqual(a: Measure | undefined, b: Measure | undefined): b
 
 export function measureIsEmpty(measure: Measure | undefined): boolean {
 	return (measure ?? []).every((col) => col.every((v) => v === null || v === ""));
+}
+
+export function blankLyricRow(): LyricRow {
+	return Array(COLS_PER_MEASURE).fill("");
+}
+
+export function lyricKey(entryId: number, pass: number): string {
+	return `${entryId}:${pass}`;
+}
+
+function entryOfKey(key: string): number {
+	return Number(key.split(":")[0]);
+}
+
+export function stepLyricAt(
+	lyrics: StepLyrics | undefined,
+	entryId: number,
+	pass: number,
+	offset: number,
+	column: number,
+): string {
+	return lyrics?.[lyricKey(entryId, pass)]?.[offset]?.[column] ?? "";
+}
+
+export function stepLyricRow(lyrics: StepLyrics | undefined, entryId: number, pass: number, offset: number): LyricRow {
+	return Array.from({ length: COLS_PER_MEASURE }, (_, c) => stepLyricAt(lyrics, entryId, pass, offset, c));
+}
+
+/** Splice the rows of every pass of the given entries at a section offset —
+ *  insert `insert` blank rows, or drop `remove` rows. */
+export function spliceStepLyrics(
+	lyrics: StepLyrics,
+	entryIds: Set<number>,
+	offset: number,
+	insert: number,
+	remove: number,
+): StepLyrics {
+	let changed = false;
+	const next: StepLyrics = {};
+	for (const [key, rows] of Object.entries(lyrics)) {
+		if (!entryIds.has(entryOfKey(key)) || rows.length <= offset) {
+			next[key] = rows;
+			continue;
+		}
+		changed = true;
+		const spliced = rows.slice();
+		spliced.splice(offset, remove, ...Array.from({ length: insert }, blankLyricRow));
+		next[key] = spliced;
+	}
+	return changed ? next : lyrics;
+}
+
+/** Drop the lyrics of progression steps that no longer exist. */
+export function pruneStepLyrics(lyrics: StepLyrics, entryIds: Set<number>): StepLyrics {
+	const keys = Object.keys(lyrics);
+	if (keys.every((key) => entryIds.has(entryOfKey(key)))) return lyrics;
+	return Object.fromEntries(keys.filter((key) => entryIds.has(entryOfKey(key))).map((key) => [key, lyrics[key]]));
 }

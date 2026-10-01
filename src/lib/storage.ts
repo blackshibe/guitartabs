@@ -1,7 +1,7 @@
-import type { ProgressionEntry, Section, Song, Track } from "../types";
+import type { LyricRow, ProgressionEntry, Section, Song, StepLyrics, Track } from "../types";
 import { advanceIdCounter, makeMeasure, nextId } from "./instruments";
 import { normalizeProgression } from "./progression";
-import { blankStrumRow, sectionRangesFor } from "./songOps";
+import { blankStrumRow, lyricKey, sectionRangesFor } from "./songOps";
 import { normalizeStrum } from "./strum";
 import { compressText, decompressText, isCompressedExport } from "./lzw";
 
@@ -225,6 +225,24 @@ function resyncLiveFeatures(song: Song): Song {
 	return { ...song, tracks, progression: normalizeProgression(song.progression, song.sections) };
 }
 
+// Lyrics were briefly stored per source measure (an array); they now belong to
+// progression steps, so each step (and pass) playing those bars gets a copy.
+function migrateMeasureLyrics(song: Song): Song {
+	const legacy = song.lyrics as unknown;
+	if (!Array.isArray(legacy)) return song;
+	const rows = legacy as LyricRow[];
+	const ranges = sectionRangesFor(song.sections, song.measureCount);
+	const lyrics: StepLyrics = {};
+	(song.progression ?? []).forEach((entry) => {
+		const range = ranges.find((r) => r.id === entry.sectionId);
+		if (!range) return;
+		const sectionRows = rows.slice(range.startMeasure, range.endMeasure + 1).map((row) => row.slice());
+		if (!sectionRows.some((row) => row.some((text) => text !== ""))) return;
+		for (let pass = 0; pass < entry.repeat; pass++) lyrics[lyricKey(entry.id, pass)] = sectionRows.map((row) => row.slice());
+	});
+	return { ...song, lyrics };
+}
+
 // Entry ids come from the shared id counter, so it is advanced past every id
 // the stored song already uses before any new one is minted.
 export function migrateSong(song: Song): Song {
@@ -237,7 +255,7 @@ export function migrateSong(song: Song): Song {
 			...(song.progression ?? []).map((entry) => entry.id),
 		),
 	);
-	return resyncLiveFeatures(migrateLegacyRepeat(migrateLegacyTrackAudio(song)));
+	return migrateMeasureLyrics(resyncLiveFeatures(migrateLegacyRepeat(migrateLegacyTrackAudio(song))));
 }
 
 export async function loadSong(id: string): Promise<Song | null> {
